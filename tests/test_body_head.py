@@ -275,3 +275,19 @@ def test_create_body_uses_simulated_servos(config, bus):
     assert "nod" in body.head.history
     body.close()
     assert body.servos.closed
+
+
+def test_factory_create_body_returns_attached_face_and_body(config, bus, monkeypatch):
+    from roco.body import factory
+
+    cfg = dict(config, face={**config["face"], "enabled": False})
+    face, body = factory.create_body(cfg, bus)
+    assert isinstance(face, NullFace)
+    bus.set_state(State.LISTENING)
+    bus.set_mouth(0.5)
+    assert face.state is State.LISTENING and face.mouth == 0.5  # already attached
+    body.close()
+
+    monkeypatch.setattr(factory.importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(ImportError):
+        factory.create_body(config, bus)
