@@ -288,6 +288,9 @@ def test_factory_create_body_returns_attached_face_and_body(config, bus, monkeyp
     assert face.state is State.LISTENING and face.mouth == 0.5  # already attached
     body.close()
 
+    assert isinstance(factory.create_face(cfg), NullFace)
     monkeypatch.setattr(factory.importlib.util, "find_spec", lambda name: None)
     with pytest.raises(ImportError):
         factory.create_body(config, bus)
+    with pytest.raises(ImportError):
+        factory.create_face(config)

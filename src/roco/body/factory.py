@@ -20,6 +20,19 @@ from roco.bus import EventBus
 log = logging.getLogger(__name__)
 
 
+def create_face(cfg: Mapping[str, Any]) -> Face:
+    """The configured face alone: :class:`PygameFace`, or :class:`NullFace` when
+    ``face.enabled`` is false. Raises :class:`ImportError` if pygame is missing."""
+    face_cfg = cfg.get("face", {})
+    if isinstance(face_cfg, Mapping) and face_cfg.get("enabled", True) is False:
+        return NullFace()
+    if importlib.util.find_spec("pygame") is None:
+        raise ImportError('The face needs pygame: pip install -e ".[face]"')
+    from roco.body.face import PygameFace
+
+    return PygameFace(cfg)
+
+
 def create_body(cfg: Mapping[str, Any], bus: EventBus) -> tuple[Face, Body]:
     """Return ``(face, body)`` with the body already attached to ``bus``.
 
@@ -30,16 +43,7 @@ def create_body(cfg: Mapping[str, Any], bus: EventBus) -> tuple[Face, Body]:
     """
     from roco.body.robot import create_body as create_robot_body
 
-    face: Face
-    face_cfg = cfg.get("face", {})
-    if isinstance(face_cfg, Mapping) and face_cfg.get("enabled", True) is False:
-        face = NullFace()
-    else:
-        if importlib.util.find_spec("pygame") is None:
-            raise ImportError('The face needs pygame: pip install -e ".[face]"')
-        from roco.body.face import PygameFace
-
-        face = PygameFace(cfg)
+    face = create_face(cfg)
     body = create_robot_body(face, cfg)
     body.attach(bus)
     return face, body
