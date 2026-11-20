@@ -74,7 +74,54 @@ ROCO's state (conversation history, reminders, Google token, models) lives in
 
 ## Google setup
 
-_Coming with the calendar/email workstream._
+ROCO can read your Google Calendar, add events (always after asking you to confirm) and
+read your Gmail. It can **never** send, delete or change email. You create your own
+Google Cloud "app" once, so your data only goes between your PC and Google. It is free.
+
+1. **Create a project.** Open <https://console.cloud.google.com/>, sign in with the
+   Google account ROCO should use, and create a new project (e.g. `roco`).
+2. **Enable the APIs.** In *APIs & Services > Library*, search for and enable
+   **Google Calendar API** and **Gmail API**.
+3. **Configure the OAuth consent screen** (*APIs & Services > OAuth consent screen*, now
+   also called *Google Auth Platform*): user type **External**, app name `ROCO`, your
+   email as support and developer contact. Leave the app in **Testing** and, under
+   *Audience > Test users*, add your own Google address. You don't need to add scopes here.
+4. **Create the OAuth client.** *APIs & Services > Credentials > Create credentials >
+   OAuth client ID* (or *Clients > Create client*), application type **Desktop app**,
+   name `ROCO desktop`. Click **Download JSON**.
+5. **Save the JSON** as `~/.roco/google_credentials.json`
+   (on Windows: `C:\Users\<you>\.roco\google_credentials.json`). Keep it private; it is
+   never committed.
+6. **Sign in:**
+   ```powershell
+   pip install -e ".[google]"
+   roco auth google
+   ```
+   Your browser opens. Because the app is in Testing, Google warns "Google hasn't
+   verified this app": click **Continue**, then allow both permissions (calendar events,
+   and read-only Gmail). The token is saved to `~/.roco/google_token.json`.
+7. **Turn it on** in `config.yaml`:
+   ```yaml
+   google:
+     enabled: true
+     # calendar_id: primary   # or another calendar's id
+   ```
+8. **Check:** `roco doctor` should show the Google checks as OK. Then try `roco chat`:
+   "what's on tomorrow?", "any unread emails?".
+
+ROCO's Google tools are `get_events`, `create_event`, `get_unread_emails`,
+`search_emails` (Gmail search syntax, e.g. `from:alice newer_than:7d`) and `read_email`.
+Times are shown in `assistant.timezone`.
+
+> **Token expiry in Testing mode:** while the consent screen is in *Testing*, Google
+> expires the refresh token after **7 days**. When ROCO says the Google sign-in has
+> expired (or `roco doctor` flags the token), run `roco auth google` again.
+> Publishing the app *In production* removes the limit, but Google then shows an
+> "unverified app" screen for the Gmail scope; for a personal assistant, signing in
+> again weekly is the simpler option.
+
+To disconnect: delete `~/.roco/google_token.json` and remove ROCO's access at
+<https://myaccount.google.com/permissions>.
 
 ## Development
 
