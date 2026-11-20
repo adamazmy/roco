@@ -57,7 +57,16 @@ def cmd_download_models(args: argparse.Namespace, cfg: Config) -> int:
 
 def cmd_demo_face(args: argparse.Namespace, cfg: Config) -> int:
     """Cycle through every emotion and state on the face."""
-    return _not_implemented("roco demo-face", "C")
+    try:
+        import pygame  # noqa: F401
+    except ImportError:
+        print('demo-face needs pygame: pip install -e ".[face]"', file=sys.stderr)
+        return EXIT_FAIL
+    from roco.body.demo import run_demo
+
+    print("Space = pause, Left/Right = step, Esc = quit.")
+    run_demo(cfg)
+    return EXIT_OK
 
 
 # --------------------------------------------------------------------------- parser
