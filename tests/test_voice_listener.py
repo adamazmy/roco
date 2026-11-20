@@ -6,7 +6,7 @@ import pytest
 
 from roco.bus import State
 from roco.voice.endpoint import RecordingSettings
-from roco.voice.listener import VoiceListener
+from roco.voice.listener import VoiceListener, strip_wake_phrase
 from voice_fakes import SILENCE, SPEECH, FakeSource, FakeTranscriber, FakeWake
 
 WAKE = 2222.0  # frames at this RMS make FakeWake fire
@@ -156,4 +156,26 @@ def test_stt_crash_is_contained(bus, states):
 
     lis.transcriber = boom
     assert lis.listen() is None
+    assert states[-1] == State.IDLE
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [("Hey Jarvis and what day is it?", "And what day is it?"),
+     ("Hey, Jarvis. What time is it?", "What time is it?"),
+     ("Jarvis, tell me a joke.", "Tell me a joke."),
+     ("hey jarvis", ""),
+     ("What does Jarvis mean?", "What does Jarvis mean?"),
+     ("Jarvisland is a place", "Jarvisland is a place"),
+     ("Hey there, how are you?", "Hey there, how are you?")],
+)
+def test_strip_wake_phrase(text, expected):
+    assert strip_wake_phrase(text, "hey jarvis") == expected
+    assert strip_wake_phrase(text, None) == text
+
+
+def test_transcript_with_only_the_wake_phrase_is_ignored(bus, states):
+    src = FakeSource([(SILENCE, GUARD + 2), (SPEECH, 6), (SILENCE, 10)])
+    lis = make(bus, src, text="Hey Jarvis.", wake_phrase="hey jarvis")
+    assert lis.listen_followup(5.0) is None
     assert states[-1] == State.IDLE

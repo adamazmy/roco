@@ -9,6 +9,7 @@ sequence.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -73,6 +74,7 @@ class VoiceListener(Listener):
         wake_tail_s: float = 0.24,
         preroll_s: float = 0.32,
         read_timeout_s: float = 0.1,
+        wake_phrase: str | None = None,
     ) -> None:
         self.source = source
         self.wake = wake
@@ -86,6 +88,7 @@ class VoiceListener(Listener):
         self.wake_tail_frames = round(wake_tail_s / frame_s)
         self.preroll_frames = max(0, round(preroll_s / frame_s))
         self.read_timeout_s = read_timeout_s
+        self.wake_phrase = wake_phrase
         self.noise_floor = NoiseFloor()
         self.last_timing: TurnTiming | None = None
         self.on_wake: Callable[[float], None] | None = None  # hook(score) for diagnostics
@@ -233,6 +236,7 @@ class VoiceListener(Listener):
         except Exception:
             log.exception("Speech-to-text failed")
             text = ""
+        text = strip_wake_phrase(text, self.wake_phrase)
         stt_done = time.monotonic()
         self.last_timing = TurnTiming(speech_end_t, stt_start, stt_done, audio_s)
         log.info("Heard (%.1fs audio, STT %d ms): %r", audio_s,
@@ -242,6 +246,22 @@ class VoiceListener(Listener):
             return None
         self._publish(State.THINKING)
         return text
+
+
+def strip_wake_phrase(text: str, phrase: str | None) -> str:
+    """Drop a leading wake phrase ("Hey, Jarvis. what time..." -> "what time...").
+
+    Matters in the follow-up window, where Adam may say the wake word anyway, and when
+    it is said in one breath with the question. The last word alone ("Jarvis, ...")
+    is stripped too.
+    """
+    words = re.findall(r"[a-z0-9]+", (phrase or "").lower())
+    if not words or not text:
+        return text
+    full = r"\W+".join(map(re.escape, words))
+    pattern = rf"^\W*(?:{full}|{re.escape(words[-1])})\b[\s,.!?:;-]*"
+    stripped = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
+    return stripped[:1].upper() + stripped[1:] if stripped != text else text
 
 
 def _intelligible(text: str) -> bool:

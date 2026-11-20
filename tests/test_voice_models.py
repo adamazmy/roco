@@ -248,3 +248,32 @@ def test_detector_loads_custom_model_path(monkeypatch, tmp_path, config):
     assert det.score([0] * 1280) == pytest.approx(0.9)
     det.reset()
     assert det.model.resets == 1
+
+
+def test_preload_llm_posts_empty_generate(monkeypatch, config):
+    from roco.voice import app
+
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, json, timeout):
+        calls.append((url, json))
+        return Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    app._preload_llm(config).join(5)
+    assert calls == [("http://localhost:11434/api/generate",
+                      {"model": "qwen2.5:7b", "keep_alive": "30m"})]
+
+
+def test_preload_llm_failure_is_only_logged(monkeypatch, config):
+    from roco.voice import app
+
+    def refuse(*a, **k):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "post", refuse)
+    app._preload_llm(config).join(5)  # no exception escapes the thread

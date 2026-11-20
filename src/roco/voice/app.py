@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import sys
+import threading
+import time
 from typing import Any
 
 from roco.bus import EventBus
@@ -39,6 +41,8 @@ def run_voice(cfg: Config) -> int:
     except ComponentUnavailable as exc:
         print(exc, file=sys.stderr)
         return 1
+
+    _preload_llm(cfg)  # loads in parallel with the voice models below
 
     face: Any = None
     body: Any = None
@@ -79,6 +83,32 @@ def run_voice(cfg: Config) -> int:
     finally:
         _close(listener, speaker, body, brain)
     return 0
+
+
+def _preload_llm(cfg: Config) -> threading.Thread:
+    """Ask Ollama to load the model now, so the first answer is not 10+ s late.
+
+    An empty /api/generate request just loads the model (and keeps it loaded for
+    ``llm.keep_alive``). Best effort, in the background: errors are only logged, the
+    brain reports real problems itself.
+    """
+
+    def load() -> None:
+        import httpx
+
+        host = str(cfg.get_path("llm.host", "http://localhost:11434")).rstrip("/")
+        body = {"model": cfg.get_path("llm.model"),
+                "keep_alive": cfg.get_path("llm.keep_alive", "30m")}
+        try:
+            t0 = time.monotonic()
+            httpx.post(f"{host}/api/generate", json=body, timeout=120).raise_for_status()
+            log.info("LLM %s loaded in %d ms", body["model"], (time.monotonic() - t0) * 1000)
+        except Exception as exc:
+            log.warning("Could not preload the LLM: %s", exc)
+
+    thread = threading.Thread(target=load, name="roco-llm-preload", daemon=True)
+    thread.start()
+    return thread
 
 
 def _close(*things: Any) -> None:

@@ -109,7 +109,7 @@ def create_listener(cfg: Config, bus: EventBus | None, speaker: Any = None,
     from roco.voice.endpoint import RecordingSettings
     from roco.voice.listener import VoiceListener
     from roco.voice.mic import MicStream, find_device
-    from roco.voice.models import oww_dir, wakeword_model_path
+    from roco.voice.models import oww_dir, wake_phrase, wakeword_model_path
     from roco.voice.wakeword import OpenWakeWordDetector
 
     wake = OpenWakeWordDetector(wakeword_model_path(cfg), oww_dir())
@@ -127,6 +127,7 @@ def create_listener(cfg: Config, bus: EventBus | None, speaker: Any = None,
         wake_threshold=float(cfg.get_path("voice.wake_word.threshold", 0.5)),
         is_speaking=(lambda: speaker.is_speaking) if speaker is not None else None,
         frame_s=frame_ms / 1000,
+        wake_phrase=wake_phrase(cfg),
     )
 
 
