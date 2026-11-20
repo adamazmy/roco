@@ -28,7 +28,9 @@ def _not_implemented(feature: str, workstream: str) -> int:
 
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     """Full voice loop: wake word -> STT -> brain -> TTS, with face and servos."""
-    return _not_implemented("roco run", "B")
+    from roco.voice.app import run_voice
+
+    return EXIT_OK if run_voice(cfg) == 0 else EXIT_FAIL
 
 
 def cmd_chat(args: argparse.Namespace, cfg: Config) -> int:
@@ -52,7 +54,10 @@ def cmd_auth_google(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_download_models(args: argparse.Namespace, cfg: Config) -> int:
-    return _not_implemented("roco download-models", "B")
+    """Download the wake-word models, the Piper voice and the whisper model (idempotent)."""
+    from roco.voice.models import main_download
+
+    return EXIT_OK if main_download(cfg, force=args.force) else EXIT_FAIL
 
 
 def cmd_demo_face(args: argparse.Namespace, cfg: Config) -> int:

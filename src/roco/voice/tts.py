@@ -1,0 +1,114 @@
+"""Piper text-to-speech, with an adapter over the two piper-tts Python APIs.
+
+- piper-tts <= 1.2: ``PiperVoice.synthesize_stream_raw(text, length_scale=...)``
+  yields raw int16 bytes per sentence (``voice.config.sample_rate``), and
+  ``PiperVoice.synthesize(text, wav_file, ...)`` writes a WAV file.
+- piper-tts >= 1.3: ``PiperVoice.synthesize(text, syn_config=SynthesisConfig(...))``
+  yields ``AudioChunk`` objects (``audio_int16_bytes``, ``sample_rate``).
+
+The API is detected on the loaded voice object at runtime, so either release works.
+"""
+
+from __future__ import annotations
+
+import inspect
+import io
+import logging
+import threading
+import wave
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+Audio = tuple[bytes, int]  # (int16 mono PCM, sample rate)
+
+
+def piper_api(voice: Any) -> str:
+    """Return ``"stream_raw"``, ``"wav_file"`` (old APIs) or ``"chunks"`` (>= 1.3)."""
+    if hasattr(voice, "synthesize_stream_raw"):
+        return "stream_raw"
+    try:
+        params = inspect.signature(voice.synthesize).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "wav_file" in params:
+        return "wav_file"
+    return "chunks"
+
+
+def _make_syn_config(length_scale: float | None) -> Any:
+    if length_scale is None:
+        return None
+    try:
+        from piper import SynthesisConfig
+    except ImportError:  # pragma: no cover - only very unusual builds
+        from piper.config import SynthesisConfig
+    return SynthesisConfig(length_scale=length_scale)
+
+
+def iter_piper_audio(
+    voice: Any,
+    text: str,
+    length_scale: float | None = None,
+    syn_config_factory: Any = _make_syn_config,
+) -> Iterator[Audio]:
+    """Synthesize ``text`` with any piper-tts version, yielding (pcm_bytes, sample_rate)."""
+    api = piper_api(voice)
+    if api == "stream_raw":
+        rate = int(voice.config.sample_rate)
+        kwargs = {"length_scale": length_scale} if length_scale is not None else {}
+        for raw in voice.synthesize_stream_raw(text, **kwargs):
+            if raw:
+                yield bytes(raw), rate
+    elif api == "wav_file":
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav:
+            kwargs = {"length_scale": length_scale} if length_scale is not None else {}
+            voice.synthesize(text, wav, **kwargs)
+        buf.seek(0)
+        with wave.open(buf, "rb") as wav:
+            rate = wav.getframerate()
+            pcm = wav.readframes(wav.getnframes())
+        if pcm:
+            yield pcm, rate
+    else:
+        syn_config = syn_config_factory(length_scale)
+        for chunk in voice.synthesize(text, syn_config=syn_config):
+            pcm = chunk.audio_int16_bytes
+            if pcm:
+                yield bytes(pcm), int(chunk.sample_rate)
+
+
+class PiperTTS:
+    """Loads a Piper voice once (thread-safe, lazily) and synthesizes sentences."""
+
+    def __init__(self, model_path: Path, config_path: Path | None = None,
+                 length_scale: float | None = 1.0) -> None:
+        self.model_path = Path(model_path)
+        self.config_path = Path(config_path) if config_path else None
+        self.length_scale = length_scale
+        self._voice: Any = None
+        self._lock = threading.Lock()
+
+    def load(self) -> Any:
+        with self._lock:
+            if self._voice is None:
+                from piper import PiperVoice
+
+                if not self.model_path.is_file():
+                    raise FileNotFoundError(
+                        f"Piper voice not found: {self.model_path}. Run: roco download-models"
+                    )
+                log.info("Loading Piper voice %s", self.model_path.name)
+                self._voice = PiperVoice.load(
+                    str(self.model_path),
+                    config_path=str(self.config_path) if self.config_path else None,
+                )
+                log.debug("Piper API: %s", piper_api(self._voice))
+            return self._voice
+
+    def __call__(self, text: str) -> Iterator[Audio]:
+        voice = self.load()
+        yield from iter_piper_audio(voice, text, self.length_scale)

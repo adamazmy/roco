@@ -83,6 +83,11 @@ CHECKS: list[Check] = [
     _extra_check("check_google_extra", ("googleapiclient", "google_auth_oauthlib"), "google"),
 ]
 
+# Workstream B: microphone, speaker, wake word and Piper voice files.
+from roco.voice.checks import VOICE_CHECKS  # noqa: E402  (imports CheckResult from here)
+
+CHECKS += VOICE_CHECKS
+
 
 def run_checks(cfg: Config, checks: list[Check] | None = None) -> list[CheckResult]:
     results = []
