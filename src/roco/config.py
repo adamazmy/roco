@@ -97,6 +97,18 @@ DEFAULTS: dict[str, Any] = {
         "token_file": "google_token.json",
         "calendar_id": "primary",
     },
+    "email": {
+        # Which account the email tools read: google (Gmail) | outlook | none.
+        # Google Calendar keeps working whatever this says.
+        "provider": "google",
+    },
+    "outlook": {
+        # Application (client) ID of your own Microsoft Entra app registration.
+        "client_id": "",
+        # consumers = personal accounts (hotmail.com, outlook.com, live.com).
+        "authority": "https://login.microsoftonline.com/consumers",
+        "token_cache_file": "outlook_token.json",
+    },
     "logging": {
         "level": "INFO",
     },

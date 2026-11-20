@@ -144,6 +144,44 @@ CHECKS += [check_google_enabled, check_google_extra, check_google_client_secrets
            check_google_token]
 
 
+# --------------------------------------------------------------------------- Outlook (D)
+# Only required when email.provider is outlook.
+
+
+def _outlook_active(cfg: Config) -> bool:
+    return str(cfg.get_path("email.provider", "google")).lower() == "outlook"
+
+
+def check_outlook_extra(cfg: Config) -> CheckResult:
+    result = _extra_check("check_outlook_extra", ("msal",), "outlook")(cfg)
+    result.optional = not _outlook_active(cfg)
+    return result
+
+
+def check_outlook_signin(cfg: Config) -> CheckResult:
+    from roco.integrations import outlook_auth
+
+    optional = not _outlook_active(cfg)
+    try:
+        session = outlook_auth.load_session(cfg)
+        session.access_token()  # refreshes: catches an expired or revoked sign-in
+    except outlook_auth.OutlookAuthError as exc:
+        return CheckResult(
+            "Outlook sign-in", False, str(exc),
+            hint="Set outlook.client_id, then run: roco auth outlook", optional=optional,
+        )
+    except OSError as exc:
+        return CheckResult(
+            "Outlook sign-in", False, f"couldn't reach Microsoft ({exc.__class__.__name__})",
+            hint="Check the internet connection.", optional=True,
+        )
+    who = (session.account() or {}).get("username", "")
+    return CheckResult("Outlook sign-in", True, who or str(session.path), optional=optional)
+
+
+CHECKS += [check_outlook_extra, check_outlook_signin]
+
+
 def run_checks(cfg: Config, checks: list[Check] | None = None) -> list[CheckResult]:
     results = []
     for check in checks or CHECKS:

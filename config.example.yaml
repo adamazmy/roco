@@ -66,5 +66,13 @@ google:
   token_file: google_token.json
   calendar_id: primary
 
+email:
+  provider: google         # google (Gmail) | outlook | none
+
+outlook:                   # only used when email.provider is outlook
+  client_id: ""            # Application (client) ID of your Entra app registration
+  authority: https://login.microsoftonline.com/consumers
+  token_cache_file: outlook_token.json
+
 logging:
   level: INFO
