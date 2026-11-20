@@ -134,6 +134,33 @@ class ChatSession:
         self._write("Bye!\n")
 
 
+def _start_face(cfg: Config, bus: EventBus) -> tuple[Any, Any, str]:
+    """(face, body attached to the bus, "") or (None, None, reason).
+
+    Prefers workstream C's ``create_body(cfg, bus) -> (face, body)`` (gestures and
+    servos, already attached); falls back to ``create_face(cfg)`` plus a base Body.
+    """
+    factory, why = _load_factory(FACE_MODULES, "create_body")
+    if factory is not None:
+        try:
+            face, body = factory(cfg, bus)
+            return face, body, ""
+        except Exception as exc:  # pygame missing, no display...
+            return None, None, f"the face failed to start ({exc})"
+    factory, why = _load_factory(FACE_MODULES, "create_face")
+    if factory is None:
+        return None, None, why
+    try:
+        face = factory(cfg)
+    except Exception as exc:
+        return None, None, f"the face failed to start ({exc})"
+    from roco.body.base import Body
+
+    body = Body(face)
+    body.attach(bus)
+    return face, body, ""
+
+
 def run_chat(args: argparse.Namespace, cfg: Config) -> int:
     from roco.brain.factory import create_brain
 
@@ -160,18 +187,9 @@ def run_chat(args: argparse.Namespace, cfg: Config) -> int:
     face = None
     body = None
     if getattr(args, "face", False):
-        factory, why = _load_factory(FACE_MODULES, "create_face")
-        try:
-            face = factory(cfg) if factory else None
-        except Exception as exc:
-            why = f"the face failed to start ({exc})"
+        face, body, why = _start_face(cfg, bus)
         if face is None:
             print(f"The face is not available: {why}. Continuing without it.", file=sys.stderr)
-        else:
-            from roco.body.base import Body
-
-            body = Body(face)
-            body.attach(bus)
 
     name = str(cfg.get_path("assistant.name", "ROCO"))
     session = ChatSession(brain, bus, speaker, name=name)

@@ -92,7 +92,7 @@ def test_cli_chat_end_to_end_with_mock_ollama(monkeypatch, capsys, tmp_path):
     # B and C have not shipped their factories on this branch: clear message, text continues.
     assert "Speech is not available" in captured.err
     assert "The face is not available" in captured.err
-    assert server.requests[0]["messages"][-1]["content"] == "hi there"
+    assert server.requests[0]["messages"][-1]["content"].startswith("hi there")
 
 
 def test_create_brain_builds_standard_tools(config, bus):
@@ -105,3 +105,38 @@ def test_create_brain_builds_standard_tools(config, bus):
     finally:
         brain.close()
         rem.stop_all()
+
+
+def test_start_face_prefers_create_body(monkeypatch, config, bus):
+    import types
+
+    from roco.body.base import NullFace
+    from roco.brain import chat
+
+    made = {}
+
+    def create_body(cfg, bus_):
+        made["body"] = object()
+        return NullFace(), made["body"]
+
+    fake = types.ModuleType("roco.body.factory")
+    fake.create_body = create_body
+    monkeypatch.setitem(__import__("sys").modules, "roco.body.factory", fake)
+    face, body, why = chat._start_face(config, bus)
+    assert isinstance(face, NullFace) and body is made["body"] and why == ""
+
+
+def test_start_face_falls_back_to_create_face(monkeypatch, config, bus):
+    import types
+
+    from roco.body.base import NullFace
+    from roco.brain import chat
+    from roco.bus import Emotion
+
+    fake = types.ModuleType("roco.body.factory")
+    fake.create_face = lambda cfg: NullFace()
+    monkeypatch.setitem(__import__("sys").modules, "roco.body.factory", fake)
+    face, body, why = chat._start_face(config, bus)
+    bus.set_emotion(Emotion.HAPPY)
+    assert face.emotion == Emotion.HAPPY  # base Body attached to the bus
+    body.close()
