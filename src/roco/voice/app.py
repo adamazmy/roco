@@ -71,12 +71,13 @@ def run_voice(cfg: Config) -> int:
 
     loop = VoiceLoop(listener, speaker, brain, bus,
                      followup_s=float(cfg.get_path("voice.followup_s", 5.0)))
-    wake = str(cfg.get_path("voice.wake_word.model", "hey_jarvis")).replace("_", " ")
-    print(f'ROCO is listening. Say "{wake}". Press Ctrl+C to quit.')
+    from roco.voice.models import wake_phrase
+
+    print(f'ROCO is listening. Say "{wake_phrase(cfg)}". Press Ctrl+C to quit.')
     try:
         run_with_face(face, loop.run)
     finally:
-        _close(listener, speaker, body)
+        _close(listener, speaker, body, brain)
     return 0
 
 

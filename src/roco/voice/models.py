@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -62,6 +63,13 @@ def wakeword_model_path(cfg: Config) -> Path:
     if "_v" not in name:
         name = f"{name}_{OWW_DEFAULT_VERSION}"
     return oww_dir() / f"{name}.onnx"
+
+
+def wake_phrase(cfg: Config) -> str:
+    """Spoken wake phrase: ``hey_jarvis`` or ``.../hey_roco_v0.1.onnx`` -> "hey roco"."""
+    stem = wakeword_model_path(cfg).stem
+    stem = re.sub(r"_v\d+(\.\d+)*$", "", stem)
+    return stem.replace("_", " ").strip()
 
 
 def wakeword_files(cfg: Config) -> list[Path]:

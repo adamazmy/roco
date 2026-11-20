@@ -203,3 +203,48 @@ def test_device_checks_with_fake_sounddevice(config, monkeypatch):
     config["voice"]["output_device"] = "usb"
     spk = checks.check_output_device(config)
     assert not spk.ok and not spk.optional and "voice.output_device" in spk.hint
+
+
+@pytest.mark.parametrize(
+    "model,phrase",
+    [("hey_jarvis", "hey jarvis"), ("hey_jarvis_v0.1", "hey jarvis"),
+     ("C:/Users/adama/.roco/models/openwakeword/hey_roco.onnx", "hey roco"),
+     ("models/hey_roco_v0.1.onnx", "hey roco")],
+)
+def test_wake_phrase_from_name_or_path(config, model, phrase):
+    config["voice"]["wake_word"]["model"] = model
+    assert models.wake_phrase(config) == phrase
+
+
+def test_detector_loads_custom_model_path(monkeypatch, tmp_path, config):
+    """A custom .onnx (e.g. hey_roco.onnx) works: openWakeWord keys scores by file stem."""
+    model = tmp_path / "hey_roco.onnx"
+    for f in (model, tmp_path / "melspectrogram.onnx", tmp_path / "embedding_model.onnx"):
+        f.write_bytes(b"x")
+    config["voice"]["wake_word"]["model"] = str(model)
+    created = {}
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+            self.resets = 0
+
+        def predict(self, frame):
+            return {"hey_roco": 0.9}
+
+        def reset(self):
+            self.resets += 1
+
+    mod = types.ModuleType("openwakeword.model")
+    mod.Model = FakeModel
+    monkeypatch.setitem(sys.modules, "openwakeword", types.ModuleType("openwakeword"))
+    monkeypatch.setitem(sys.modules, "openwakeword.model", mod)
+    from roco.voice.wakeword import OpenWakeWordDetector
+
+    det = OpenWakeWordDetector(models.wakeword_model_path(config), tmp_path)
+    assert det.name == "hey_roco"
+    assert created["wakeword_models"] == [str(model)]
+    assert created["inference_framework"] == "onnx"
+    assert det.score([0] * 1280) == pytest.approx(0.9)
+    det.reset()
+    assert det.model.resets == 1
