@@ -36,3 +36,6 @@ Thumbs.db
 .agentsroom/
 .claude/
 .mcp.json
+
+# Agent git worktrees
+.worktrees/
