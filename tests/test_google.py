@@ -19,7 +19,7 @@ import pytest
 
 from roco import cli, doctor
 from roco.config import load_config
-from roco.integrations import google_auth
+from roco.integrations import google_auth, text
 from roco.tools import ToolContext, ToolRegistry, build_registry
 from roco.tools import google as g
 
@@ -467,7 +467,7 @@ def test_unread_emails_listing():
     assert lines[0] == "2 email(s) (about 7 in total):"
     assert lines[1].startswith("- [id m1] Sat 22 Nov 10:00 from Alice Smith: Lunch? | ")
     assert "I'll book" in lines[1] and lines[1].endswith("...")
-    assert len(lines[1].split(" | ", 1)[1]) == g.SNIPPET_CHARS
+    assert len(lines[1].split(" | ", 1)[1]) == text.SNIPPET_CHARS
     assert lines[2] == "- [id m2] Sat 22 Nov 10:00 from bob@example.com: (no subject)"
     msgs = gmail.messages()
     assert msgs.list_calls[0] == {"userId": "me", "q": "is:unread in:inbox", "maxResults": 5}
