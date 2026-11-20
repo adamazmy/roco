@@ -80,8 +80,68 @@ CHECKS: list[Check] = [
     _extra_check("check_voice_extra",
                  ("sounddevice", "openwakeword", "faster_whisper", "piper"), "voice"),
     _extra_check("check_face_extra", ("pygame",), "face"),
-    _extra_check("check_google_extra", ("googleapiclient", "google_auth_oauthlib"), "google"),
+    # Google checks (workstream D) are appended below.
 ]
+
+
+# --------------------------------------------------------------------------- Google (D)
+# All optional while google.enabled is false, so a text-only setup stays green.
+
+_GOOGLE_MODULES = ("googleapiclient", "google_auth_oauthlib", "google_auth_httplib2")
+
+
+def _google_enabled(cfg: Config) -> bool:
+    return bool(cfg.get_path("google.enabled", False))
+
+
+def check_google_enabled(cfg: Config) -> CheckResult:
+    on = _google_enabled(cfg)
+    return CheckResult(
+        "Google enabled", on, "google.enabled is " + ("true" if on else "false"),
+        hint="After 'roco auth google', set google.enabled: true in config.yaml.",
+        optional=True,
+    )
+
+
+def check_google_extra(cfg: Config) -> CheckResult:
+    result = _extra_check("check_google_extra", _GOOGLE_MODULES, "google")(cfg)
+    result.optional = not _google_enabled(cfg)
+    return result
+
+
+def check_google_client_secrets(cfg: Config) -> CheckResult:
+    from roco.integrations import google_auth
+
+    path = google_auth.credentials_path(cfg)
+    try:
+        google_auth.read_client_secrets(path)
+    except google_auth.GoogleAuthError as exc:
+        return CheckResult(
+            "Google client secrets", False, str(exc),
+            hint='See "Google setup" in the README.', optional=not _google_enabled(cfg),
+        )
+    return CheckResult("Google client secrets", True, str(path))
+
+
+def check_google_token(cfg: Config) -> CheckResult:
+    from roco.integrations import google_auth
+
+    optional = not _google_enabled(cfg)
+    path = google_auth.token_path(cfg)
+    try:
+        google_auth.read_token_info(path)
+        if all(importlib.util.find_spec(m) is not None for m in _GOOGLE_MODULES):
+            # Refreshes an expired access token: catches revoked / 7-day-expired tokens.
+            google_auth.load_credentials(cfg)
+    except google_auth.GoogleAuthError as exc:
+        return CheckResult(
+            "Google token", False, str(exc), hint="Run: roco auth google", optional=optional
+        )
+    return CheckResult("Google token", True, str(path), optional=optional)
+
+
+CHECKS += [check_google_enabled, check_google_extra, check_google_client_secrets,
+           check_google_token]
 
 
 def run_checks(cfg: Config, checks: list[Check] | None = None) -> list[CheckResult]:

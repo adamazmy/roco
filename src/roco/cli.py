@@ -48,7 +48,10 @@ def cmd_auth_usage(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_auth_google(args: argparse.Namespace, cfg: Config) -> int:
-    return _not_implemented("roco auth google", "D")
+    """Browser sign-in for Google Calendar + Gmail (read-only); saves the token in ~/.roco."""
+    from roco.integrations.google_auth import run_auth_flow
+
+    return EXIT_OK if run_auth_flow(cfg) == 0 else EXIT_FAIL
 
 
 def cmd_download_models(args: argparse.Namespace, cfg: Config) -> int:
