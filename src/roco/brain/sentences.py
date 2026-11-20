@@ -39,7 +39,8 @@ _INLINE_TAG = re.compile(
     r"\s*\[\s*(?:" + "|".join(e.value for e in Emotion) + r")\s*\]\s*", re.IGNORECASE
 )
 # Short bracketed stage directions the model sometimes adds: "[chuckling]", "[laughs softly]".
-_STAGE_DIRECTION = re.compile(r"\s*\[\s*[A-Za-z][A-Za-z '\-]{0,30}\]\s*")
+# Also catches a tool name the model wrote in brackets: "[get_current_time]".
+_STAGE_DIRECTION = re.compile(r"\s*\[\s*[A-Za-z][A-Za-z_ '\-]{0,30}\]\s*")
 _SPACES = re.compile(r"[ \t]+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,!?;:])")
 

@@ -12,6 +12,9 @@ The calendar tool is a stand-in shaped like workstream D's.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import httpx
 import pytest
 
@@ -21,6 +24,7 @@ from roco.config import DEFAULTS, load_config
 from roco.paths import resolve
 from roco.tools import ToolContext, build_registry
 from roco.tools import reminders as rem
+from roco.tools.clock import spoken_time
 
 pytestmark = [pytest.mark.ollama, pytest.mark.timeout(900)]
 
@@ -37,11 +41,33 @@ SCENARIO: list[tuple[str, str | None, str | None]] = [
     ("Is there anything on tomorrow now?", "get_events", "book_dentist"),
     ("Why do owls fly so quietly? One sentence, please.", None, None),
     ("Remind me to take the bins out in 30 minutes.", "set_reminder", None),
+    # Phrasing from a real voice-loop transcript (speech-to-text drops the "to").
+    ("can you remind me in twenty minutes stretch?", "set_reminder", None),
     ("And what time is it now?", "get_current_time", None),
     ("Cancel the reminder about Mum.", "cancel_reminder", None),
     ("Which reminders are left?", "list_reminders", None),
     ("Lovely, thanks. That's all for now.", None, None),
 ]
+
+
+def _states_current_time(reply: str) -> bool:
+    """True if the reply gives a time within a few minutes of now.
+
+    Accepts the spoken form ROCO is given ("ten minutes to ten") or HH:MM / H:MM,
+    for any minute from 4 minutes ago to 1 minute ahead. "Half past nine" at
+    21:46 fails, which is the invented-time bug this guards against.
+    """
+    now = datetime.now(ZoneInfo(DEFAULTS["assistant"]["timezone"]))
+    text = reply.lower()
+    for delta in range(-4, 2):
+        t = now + timedelta(minutes=delta)
+        phrase = spoken_time(t)
+        for suffix in (" in the morning", " in the afternoon", " in the evening", " at night"):
+            phrase = phrase.removesuffix(suffix)
+        h12 = t.hour % 12 or 12
+        if phrase in text or f"{t:%H:%M}" in text or f"{h12}:{t:%M}" in text:
+            return True
+    return False
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -117,15 +143,23 @@ def test_long_conversation_uses_tools_for_every_action():
                 failures.append(f"empty reply to {said!r}")
             if "[" in reply or "]" in reply:
                 failures.append(f"tag leaked into {reply!r}")
-            if required and required not in calls:
+            if required == "get_current_time":
+                # The brain gives the model the time with every turn, so a correct
+                # answer without the tool is fine; an invented time is not.
+                if required not in calls and not _states_current_time(reply):
+                    failures.append(f"{said!r}: wrong or invented time: {reply!r}")
+            elif required and required not in calls:
                 failures.append(f"{said!r}: expected a {required} call, got {calls}")
             if said.startswith("Is there anything on tomorrow") and "dentist" not in reply.lower():
                 failures.append(f"stale calendar answer: {reply!r}")
 
         service = rem.get_service(resolve(cfg.get_path("reminders.file")))
         left = [r.text.lower() for r in service.pending()]
-        if not (len(left) == 1 and "bin" in left[0]):
-            failures.append(f"reminders left should be just the bins one, got {left}")
+        expected_left = len(left) == 2 and any("bin" in t for t in left) and any(
+            "stretch" in t for t in left
+        )
+        if not expected_left:
+            failures.append(f"reminders left should be bins + stretch, got {left}")
         tag_rate = tagged / len(SCENARIO)
         if tag_rate < 0.7:
             failures.append(f"only {tag_rate:.0%} of replies started with an emotion tag")

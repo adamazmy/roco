@@ -167,6 +167,8 @@ class OllamaBrain(Brain):
                 tags=self.history_tags, tools=self.history_tools, now=started
             )
             messages = [self._system_message(), *past]
+            # No current time is added here: tried after the user text, it made qwen2.5 skip
+            # tools far more often (2/4 vs 4/4 scenario runs). Time comes from the tool.
             messages.append({"role": "user", "content": text})
             try:
                 trace = self._converse(messages, reply, turn)

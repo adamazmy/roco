@@ -254,6 +254,7 @@ def test_history_squeezes_tool_results_of_older_turns():
         ("Because they make up everything! [chuckling]", ["Because they make up everything!"]),
         ("[laughs softly] Oh, that's good.", ["Oh, that's good."]),
         ("I *really* like owls.", ["I really like owls."]),
+        ("Just checking... [get_current_time]", ["Just checking..."]),
         ("Item [1] stays.", ["Item [1] stays."]),  # not a stage direction
     ],
 )
