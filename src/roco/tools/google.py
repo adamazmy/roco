@@ -25,6 +25,7 @@ import html
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, tzinfo
@@ -224,6 +225,8 @@ def describe_error(exc: BaseException) -> str:
         reason = _http_reason(exc)
         if status == 401:
             return AUTH_EXPIRED
+        if "mail service not enabled" in reason.lower():
+            return "This Google account has no Gmail mailbox, so there is no email to read."
         if status == 403:
             text = (reason + " " + str(exc)).lower()
             if "accessnotconfigured" in text or "has not been used" in text or "disabled" in text:
@@ -494,9 +497,11 @@ def _format_timed(start: datetime, end: datetime, day: date) -> str:
 
 
 def _event_title(ev: dict[str, Any]) -> str:
-    title = " ".join(str(ev.get("summary") or "(no title)").split())
-    location = " ".join(str(ev.get("location") or "").split())
-    if location:
+    title = speakable(str(ev.get("summary") or "")) or "(no title)"
+    location = speakable(str(ev.get("location") or ""))
+    if re.match(r"(https?://|www\.)", location, re.I):
+        title += " (online)"  # a meeting link is useless read aloud
+    elif location:
         title += f" at {_clip(location, 40)}"
     return title
 
@@ -517,8 +522,8 @@ def _day_label(d: date) -> str:
 def format_email_line(msg: dict[str, Any], tz: tzinfo) -> str:
     headers = _headers(msg)
     sender = _sender_name(headers.get("from", ""))
-    subject = _clip(" ".join(headers.get("subject", "").split()) or "(no subject)", 80)
-    snippet = _clip(" ".join(html.unescape(msg.get("snippet", "")).split()), SNIPPET_CHARS)
+    subject = _clip(speakable(headers.get("subject", "")) or "(no subject)", 80)
+    snippet = _clip(speakable(html.unescape(msg.get("snippet", ""))), SNIPPET_CHARS)
     when = _email_time(msg, tz)
     line = f"- [id {msg.get('id', '?')}] {when + ' ' if when else ''}from {sender}: {subject}"
     return line + (f" | {snippet}" if snippet else "")
@@ -551,7 +556,7 @@ def _headers(msg: dict[str, Any]) -> dict[str, str]:
 
 def _sender_name(value: str) -> str:
     name, addr = parseaddr(value)
-    return " ".join((name or addr or value or "unknown").strip().strip('"').split())
+    return speakable((name or addr or value).strip().strip('"')) or "unknown"
 
 
 def _email_time(msg: dict[str, Any], tz: tzinfo) -> str:
@@ -671,6 +676,26 @@ def truncate(text: str, limit: int = BODY_CHARS) -> str:
 
 
 # --------------------------------------------------------------------------- helpers
+
+# Zero-width joiner, variation selectors and skin-tone modifiers glue emoji together.
+_EMOJI_GLUE = {"‍", "︎", "️", "⃣"}
+
+
+def speakable(text: str) -> str:
+    """Drop emoji and pictographic symbols, collapse whitespace.
+
+    ROCO's replies are spoken and must not contain emoji; a small model copies whatever
+    the tool returns, and the Windows console can't print most of them either.
+    """
+    kept = []
+    for ch in text:
+        if ch in _EMOJI_GLUE or 0x1F3FB <= ord(ch) <= 0x1F3FF:
+            continue
+        if unicodedata.category(ch) == "So":
+            kept.append(" ")
+            continue
+        kept.append(ch)
+    return " ".join("".join(kept).split())
 
 
 def _clip(text: str, limit: int) -> str:

@@ -737,3 +737,36 @@ def test_doctor_google_required_when_enabled(isolated_home, monkeypatch):
     results = {r.name: r for r in doctor.run_checks(cfg, GOOGLE_CHECKS)}
     assert results["Google client secrets"].ok
     assert results["Google token"].ok
+
+
+# --------------------------------------------------------------------------- live-run findings
+
+
+def test_emoji_stripped_from_titles_subjects_and_senders():
+    items = [timed("\U0001f3cb\ufe0f Gym", "2026-11-21T08:00:00Z", "2026-11-21T09:00:00Z"),
+             timed("\U0001f9ed Career prep \U0001f44d\U0001f3fd", "2026-11-21T13:00:00Z",
+                   "2026-11-21T15:45:00Z")]
+    out = make_tools(FakeCalendar(items=items)).get_events("2026-11-21")
+    assert out == "Sat 21 Nov: 08:00-09:00 Gym; 13:00-15:45 Career prep"
+    gmail = FakeGmail(messages={
+        "m1": meta("m1", '"\u2728 Café Team" <x@y.com>', "Sale \U0001f525 now", "Hi \u2764\ufe0f")
+    })
+    line = make_tools(gmail=gmail).get_unread_emails().splitlines()[1]
+    assert line.endswith("from Café Team: Sale now | Hi")
+    assert g.speakable("Mum's 50th — party at 7pm £20") == "Mum's 50th — party at 7pm £20"
+
+
+def test_account_without_gmail():
+    error = FakeHttpError(400, "Mail service not enabled", "failedPrecondition")
+    out = make_tools(gmail=FakeGmail(error=error)).get_unread_emails()
+    assert out == (
+        "Error: couldn't check email. "
+        "This Google account has no Gmail mailbox, so there is no email to read."
+    )
+
+
+def test_link_location_becomes_online():
+    items = [timed("RnD meeting", "2026-11-23T18:00:00Z", "2026-11-23T19:00:00Z",
+                   location="https://us06web.zoom.us/j/123?pwd=abc")]
+    out = make_tools(FakeCalendar(items=items)).get_events("2026-11-23")
+    assert out == "Mon 23 Nov: 18:00-19:00 RnD meeting (online)"
