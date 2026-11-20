@@ -193,5 +193,4 @@ def test_register_exposes_tools_and_starts_scheduler(config, bus):
         assert registry.call("cancel_reminder", {"id": "1"}).startswith("Cancelled reminder 1")
         assert registry.call("list_reminders") == "You have no reminders."
     finally:
-        for service in list(rem._services.values()):
-            service.stop()
+        rem.stop_all()

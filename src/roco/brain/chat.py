@@ -3,8 +3,10 @@
 Optional pieces from the other workstreams are looked up by convention and are
 never required:
 
-- ``--speak``: ``roco.voice.create_speaker(config, bus) -> Speaker`` (workstream B)
-- ``--face``:  ``roco.body.create_face(config) -> Face`` (workstream C); a
+- ``--speak``: ``roco.voice.factory.create_speaker(config, bus) -> Speaker``
+  (workstream B; ``roco.voice.create_speaker`` also works)
+- ``--face``:  ``roco.body.factory.create_face(config) -> Face`` (workstream C;
+  ``roco.body.create_face`` also works); a
   :class:`roco.body.base.Body` is attached to the bus to drive it.
 
 If one is missing, a clear message is printed and chat continues without it.
@@ -27,19 +29,25 @@ from roco.config import Config
 log = logging.getLogger(__name__)
 
 PROMPT = "you> "
+SPEAKER_MODULES = ("roco.voice.factory", "roco.voice")
+FACE_MODULES = ("roco.body.factory", "roco.body")
 HELP = "Type to chat. Commands: /reset (forget the conversation), /quit (or Ctrl+C)."
 
 
-def _load_factory(module: str, name: str) -> tuple[Callable[..., Any] | None, str]:
-    """Import ``module.name``; return (factory, "") or (None, reason)."""
-    try:
-        mod = importlib.import_module(module)
-    except ImportError as exc:
-        return None, f"{module} could not be imported ({exc})"
-    factory = getattr(mod, name, None)
-    if not callable(factory):
-        return None, f"{module}.{name} is not available yet"
-    return factory, ""
+def _load_factory(modules: tuple[str, ...], name: str) -> tuple[Callable[..., Any] | None, str]:
+    """Return the first callable ``module.name`` found, as (factory, ""), or (None, reason)."""
+    reasons = []
+    for module in modules:
+        try:
+            mod = importlib.import_module(module)
+        except ImportError as exc:
+            reasons.append(f"{module} could not be imported ({exc})")
+            continue
+        factory = getattr(mod, name, None)
+        if callable(factory):
+            return factory, ""
+        reasons.append(f"{module}.{name} is not available yet")
+    return None, "; ".join(reasons)
 
 
 class ChatSession:
@@ -127,18 +135,21 @@ class ChatSession:
 
 
 def run_chat(args: argparse.Namespace, cfg: Config) -> int:
-    from roco.brain.ollama_brain import create_brain
-    from roco.tools import ToolContext, build_registry
+    from roco.brain.factory import create_brain
+
+    if not getattr(args, "verbose", False):
+        # Request lines would interleave with the conversation on screen.
+        for noisy in ("httpx", "httpcore"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
     bus = EventBus()
-    registry = build_registry(ToolContext(config=cfg, bus=bus))
-    brain = create_brain(cfg, bus, registry)
+    brain = create_brain(cfg, bus)
     if getattr(args, "reset", False):
         brain.reset()
 
     speaker = None
     if getattr(args, "speak", False):
-        factory, why = _load_factory("roco.voice", "create_speaker")
+        factory, why = _load_factory(SPEAKER_MODULES, "create_speaker")
         try:
             speaker = factory(cfg, bus) if factory else None
         except Exception as exc:  # missing audio device, model files...
@@ -149,7 +160,7 @@ def run_chat(args: argparse.Namespace, cfg: Config) -> int:
     face = None
     body = None
     if getattr(args, "face", False):
-        factory, why = _load_factory("roco.body", "create_face")
+        factory, why = _load_factory(FACE_MODULES, "create_face")
         try:
             face = factory(cfg) if factory else None
         except Exception as exc:

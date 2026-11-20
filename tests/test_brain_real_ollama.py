@@ -11,6 +11,7 @@ import pytest
 from roco.brain.ollama_brain import OllamaBrain
 from roco.bus import Topic
 from roco.config import DEFAULTS, load_config
+from roco.paths import resolve
 from roco.tools import ToolContext, build_registry
 from roco.tools import reminders as rem
 
@@ -33,8 +34,7 @@ def brain(bus):
     cfg = load_config(overrides={"history": {"persist": False}})
     registry = build_registry(ToolContext(config=cfg, bus=bus))
     yield OllamaBrain(cfg, bus, registry)
-    for service in list(rem._services.values()):
-        service.stop()
+    rem.stop_all()
 
 
 def test_real_reply_has_emotion_and_sentences(brain, bus):
@@ -57,5 +57,5 @@ def test_real_time_tool(brain):
 def test_real_reminder_tool(brain):
     reply = brain.respond("Remind me to stretch in 20 minutes.")
     print("\nreply:", reply)
-    pending = next(iter(rem._services.values())).pending()
+    pending = rem.get_service(resolve("reminders.json")).pending()
     assert any("stretch" in r.text.lower() for r in pending)

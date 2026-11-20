@@ -323,6 +323,20 @@ def start_service(bus: EventBus, path: Path | None, tz: tzinfo) -> ReminderServi
         return service
 
 
+def stop_all() -> None:
+    """Stop every running scheduler (shutdown and tests)."""
+    with _services_lock:
+        services = list(_services.values())
+        _services.clear()
+    for service in services:
+        service.stop()
+
+
+def get_service(path: Path | None) -> ReminderService | None:
+    with _services_lock:
+        return _services.get(path)
+
+
 def register(registry: ToolRegistry, ctx: ToolContext) -> None:
     path = resolve(ctx.config.get_path("reminders.file", "reminders.json"))
     service = start_service(ctx.bus, path, local_timezone(ctx.config))

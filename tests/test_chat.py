@@ -93,3 +93,15 @@ def test_cli_chat_end_to_end_with_mock_ollama(monkeypatch, capsys, tmp_path):
     assert "Speech is not available" in captured.err
     assert "The face is not available" in captured.err
     assert server.requests[0]["messages"][-1]["content"] == "hi there"
+
+
+def test_create_brain_builds_standard_tools(config, bus):
+    from roco.brain.factory import create_brain
+    from roco.tools import reminders as rem
+
+    brain = create_brain(config, bus)
+    try:
+        assert {"get_current_time", "set_reminder"} <= set(brain.registry.names())
+    finally:
+        brain.close()
+        rem.stop_all()
