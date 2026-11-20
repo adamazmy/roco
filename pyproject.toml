@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "roco"
+version = "0.1.0"
+description = "ROCO: a local-first voice assistant for a small desktop robot"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Adam Azmy" }]
+keywords = ["assistant", "robot", "voice", "ollama", "raspberry-pi"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+# Core = text mode only. Everything heavy lives in extras.
+dependencies = [
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "tzdata>=2024.1; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+voice = [
+    "numpy>=1.26",
+    "sounddevice>=0.4.6",
+    "openwakeword>=0.6.0",
+    "onnxruntime>=1.17",
+    "faster-whisper>=1.0.0",
+    "piper-tts>=1.2.0",
+]
+face = ["pygame>=2.5"]
+google = [
+    "google-api-python-client>=2.120",
+    "google-auth>=2.28",
+    "google-auth-oauthlib>=1.2",
+    "google-auth-httplib2>=0.2",
+]
+pi = ["adafruit-circuitpython-servokit>=1.3"]
+dev = ["pytest>=8.0", "pytest-timeout>=2.3", "ruff>=0.5"]
+# Everything you want on the Windows "brain" PC. `pi` is deliberately excluded.
+all = ["roco[voice,face,google,dev]"]
+
+[project.scripts]
+roco = "roco.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/adamazmy/roco"
+Issues = "https://github.com/adamazmy/roco/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/roco"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+timeout = 30
+markers = [
+    "ollama: needs a real Ollama server (skipped in CI)",
+    "hardware: needs a mic, speaker, display or servos (skipped in CI)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+# Interfaces deliberately ship optional no-op hooks (close, stop, release).
+ignore = ["B027"]

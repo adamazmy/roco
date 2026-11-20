@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ROCO local config, state and secrets (these normally live in ~/.roco)
+config.yaml
+.roco/
+*token*.json
+*credentials*.json
+client_secret*.json
+history.json
+reminders.json
+
+# Models
+models/
+*.onnx
+*.onnx.json
+*.tflite
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local agent tooling
+.agentsroom/
+.claude/
+.mcp.json

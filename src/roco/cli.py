@@ -1,0 +1,127 @@
+"""Command-line entry point: ``roco <command>``."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from collections.abc import Callable, Sequence
+
+from roco import __version__
+from roco.config import Config, ConfigError, load_config
+
+EXIT_OK = 0
+EXIT_FAIL = 1
+EXIT_NOT_IMPLEMENTED = 3
+
+
+def _not_implemented(feature: str, workstream: str) -> int:
+    print(f"'{feature}' is not implemented yet (workstream {workstream}).", file=sys.stderr)
+    return EXIT_NOT_IMPLEMENTED
+
+
+# --------------------------------------------------------------------------- commands
+# Each command takes (args, config) and returns an exit code. Workstreams replace
+# the stubs below by importing their implementation lazily inside the function,
+# so `roco --help` and text mode never import optional dependencies.
+
+
+def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
+    """Full voice loop: wake word -> STT -> brain -> TTS, with face and servos."""
+    return _not_implemented("roco run", "B")
+
+
+def cmd_chat(args: argparse.Namespace, cfg: Config) -> int:
+    """Text mode: keyboard in, printed sentences out."""
+    return _not_implemented("roco chat", "A")
+
+
+def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
+    from roco.doctor import print_report, run_checks
+
+    return EXIT_OK if print_report(run_checks(cfg)) else EXIT_FAIL
+
+
+def cmd_auth_usage(args: argparse.Namespace, cfg: Config) -> int:
+    print("usage: roco auth google", file=sys.stderr)
+    return EXIT_FAIL
+
+
+def cmd_auth_google(args: argparse.Namespace, cfg: Config) -> int:
+    return _not_implemented("roco auth google", "D")
+
+
+def cmd_download_models(args: argparse.Namespace, cfg: Config) -> int:
+    return _not_implemented("roco download-models", "B")
+
+
+def cmd_demo_face(args: argparse.Namespace, cfg: Config) -> int:
+    """Cycle through every emotion and state on the face."""
+    return _not_implemented("roco demo-face", "C")
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="roco", description="ROCO, a local-first desk robot assistant."
+    )
+    parser.add_argument("--version", action="version", version=f"roco {__version__}")
+    parser.add_argument("-c", "--config", help="path to config.yaml")
+    parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    def add(name: str, func: Callable[..., int], help_text: str) -> argparse.ArgumentParser:
+        p = sub.add_parser(name, help=help_text, description=help_text)
+        p.set_defaults(func=func)
+        return p
+
+    add("run", cmd_run, "run the full voice assistant (wake word, speech, face)")
+
+    chat = add("chat", cmd_chat, "chat with ROCO by keyboard")
+    chat.add_argument("--speak", action="store_true", help="also speak replies aloud")
+    chat.add_argument("--face", action="store_true", help="also show the animated face")
+    chat.add_argument("--reset", action="store_true", help="start with an empty history")
+
+    add("doctor", cmd_doctor, "check Ollama, models, audio devices and optional extras")
+
+    auth = add("auth", cmd_auth_usage, "connect accounts")
+    auth_sub = auth.add_subparsers(dest="provider", metavar="<provider>")
+    google = auth_sub.add_parser("google", help="connect Google Calendar and Gmail (read-only)")
+    google.set_defaults(func=cmd_auth_google)
+
+    dl = add("download-models", cmd_download_models, "download wake-word and voice models")
+    dl.add_argument("--force", action="store_true", help="re-download even if present")
+
+    add("demo-face", cmd_demo_face, "cycle the face through every emotion")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        parser.print_help()
+        return EXIT_FAIL
+
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as exc:
+        print(f"Config error: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+
+    level = "DEBUG" if args.verbose else str(cfg.get_path("logging.level", "INFO")).upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    try:
+        return int(args.func(args, cfg) or EXIT_OK)
+    except KeyboardInterrupt:
+        return EXIT_OK
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

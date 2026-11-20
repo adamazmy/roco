@@ -1,0 +1,70 @@
+# ROCO configuration example.
+# Copy to config.yaml (next to where you run `roco`) or to ~/.roco/config.yaml.
+# Only the keys you change need to be present: everything is deep-merged over the
+# built-in defaults (src/roco/config.py). Relative file paths live in ~/.roco.
+
+assistant:
+  name: ROCO
+  user_name: Adam
+  timezone: Europe/London
+
+llm:
+  # On the Pi, point this at the PC running Ollama, e.g. http://192.168.1.20:11434
+  # (on the PC, set OLLAMA_HOST=0.0.0.0 so Ollama listens on the LAN).
+  host: http://localhost:11434
+  model: qwen2.5:7b
+  temperature: 0.6
+  num_ctx: 4096
+  keep_alive: 30m          # keep the model loaded between questions
+  timeout_s: 120
+  max_tool_rounds: 5
+
+history:
+  max_turns: 12            # user+assistant pairs kept in context
+  persist: true
+  file: history.json
+
+reminders:
+  file: reminders.json
+
+voice:
+  input_device: null       # null = system default, or a name substring / device index
+  output_device: null
+  wake_word:
+    model: hey_jarvis
+    threshold: 0.5
+  recording:
+    silence_s: 0.9         # stop recording after this much silence
+    max_s: 15
+  followup_s: 5            # talk again without the wake word within this window
+  stt:
+    model: base.en
+    device: cpu            # or cuda
+    compute_type: int8
+  tts:
+    voice: en_GB-alan-medium
+    length_scale: 1.0      # >1 slower, <1 faster
+
+face:
+  enabled: true
+  width: 800
+  height: 480
+  fullscreen: false        # true on the Pi's display
+  fps: 30
+  eye_color: "#00E5FF"
+  background: "#000000"
+
+servos:
+  backend: simulated       # simulated | pca9685
+  i2c_address: 0x40
+  pan:  { channel: 0, min: 30, max: 150, center: 90 }
+  tilt: { channel: 1, min: 60, max: 120, center: 90 }
+
+google:
+  enabled: false           # set true after `roco auth google`
+  credentials_file: google_credentials.json
+  token_file: google_token.json
+  calendar_id: primary
+
+logging:
+  level: INFO
