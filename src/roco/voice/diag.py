@@ -80,7 +80,38 @@ def cmd_mic(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_say_raw(args: argparse.Namespace) -> int:
+    """Synthesize once, then write a WAV file or play it in one go (no streaming)."""
+    import wave
+
+    from roco.voice.factory import create_tts
+
+    tts = create_tts(_cfg(args))
+    chunks = list(tts(args.text))
+    pcm, rate = b"".join(c[0] for c in chunks), chunks[0][1]
+    if args.mode == "wav":
+        path = args.wav
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(pcm)
+        print(f"RESULT wav={path} seconds={len(pcm) / 2 / rate:.2f} rate={rate}")
+        return 0
+    import numpy as np
+    import sounddevice as sd
+
+    from roco.voice.mic import find_device
+
+    device = find_device(_cfg(args).get_path("voice.output_device"), "output")
+    sd.play(np.frombuffer(pcm, dtype=np.int16), rate, device=device, blocking=True)
+    print(f"RESULT played_direct seconds={len(pcm) / 2 / rate:.2f} rate={rate}")
+    return 0
+
+
 def cmd_say(args: argparse.Namespace) -> int:
+    if args.mode != "stream":
+        return cmd_say_raw(args)
     from roco.bus import EventBus, Topic
     from roco.voice.factory import create_speaker
 
@@ -90,18 +121,22 @@ def cmd_say(args: argparse.Namespace) -> int:
     bus.subscribe(Topic.MOUTH, mouth.append)
     t0 = time.monotonic()
     speaker = create_speaker(cfg, bus)
+    if args.latency:
+        speaker._output.latency = float(args.latency) if args.latency[0].isdigit() else args.latency
     t_loaded = time.monotonic()
     first: list[float] = []
     speaker.on_audio_start(first.append)
     speaker.say(args.text)
     ok = speaker.wait_done(60)
     t_done = time.monotonic()
+    underflows = getattr(speaker._output, "underflows", "?")
     speaker.close()
     opened = [m for m in mouth if m > 0.05]
     print(f"RESULT ok={ok} load_ms={(t_loaded - t0) * 1000:.0f} "
           f"first_audio_ms={((first[0] if first else t_done) - t_loaded) * 1000:.0f} "
           f"total_ms={(t_done - t_loaded) * 1000:.0f} mouth_blocks={len(mouth)} "
-          f"mouth_max={max(mouth, default=0):.2f} mouth_open_blocks={len(opened)}")
+          f"mouth_max={max(mouth, default=0):.2f} mouth_open_blocks={len(opened)} "
+          f"underflows={underflows}")
     return 0 if ok else 1
 
 
@@ -194,6 +229,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.set_defaults(func=cmd_mic)
     p = sub.add_parser("say")
     p.add_argument("text", nargs="?", default="Hello Adam. I'm ROCO, and this is my voice.")
+    p.add_argument("--latency", help="low | high | seconds (default high)")
+    p.add_argument("--mode", choices=["stream", "direct", "wav"], default="stream",
+                   help="stream = ROCO's speaker; direct = play in one go; wav = write a file")
+    p.add_argument("--wav", default="roco_say.wav")
     p.set_defaults(func=cmd_say)
     p = sub.add_parser("wake")
     p.add_argument("-s", "--seconds", type=float, default=60.0)

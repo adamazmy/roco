@@ -57,11 +57,19 @@ def require_models(cfg: Config) -> None:
 
 def create_tts(cfg: Config) -> Any:
     from roco.voice.models import piper_voice_paths
-    from roco.voice.tts import PiperTTS
+    from roco.voice.tts import DEFAULT_NOISE_SCALE, DEFAULT_NOISE_W, PiperTTS, Synthesis
+
+    def setting(key: str, default: float | None) -> float | None:
+        value = cfg.get_path(f"voice.tts.{key}", default)
+        return None if value is None else float(value)
 
     onnx, config_json = piper_voice_paths(cfg)
-    length_scale = cfg.get_path("voice.tts.length_scale", 1.0)
-    return PiperTTS(onnx, config_json, float(length_scale) if length_scale else None)
+    settings = Synthesis(
+        length_scale=setting("length_scale", 1.0),
+        noise_scale=setting("noise_scale", DEFAULT_NOISE_SCALE),
+        noise_w=setting("noise_w", DEFAULT_NOISE_W),
+    )
+    return PiperTTS(onnx, config_json, settings)
 
 
 def create_speaker(cfg: Config, bus: EventBus | None, warm_up: bool = True) -> Any:

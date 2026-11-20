@@ -17,12 +17,36 @@ import logging
 import threading
 import wave
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 Audio = tuple[bytes, int]  # (int16 mono PCM, sample rate)
+
+# Smoother than the voices' own defaults (noise 0.667, noise_w 0.8): en_GB-alan-medium
+# sounds choppy with those. Chosen by ear in an A/B listening test.
+DEFAULT_NOISE_SCALE = 0.5
+DEFAULT_NOISE_W = 0.333
+
+
+@dataclass(frozen=True)
+class Synthesis:
+    """Voice settings; None means "use the voice's own default"."""
+
+    length_scale: float | None = None
+    noise_scale: float | None = None
+    noise_w: float | None = None
+
+    def old_kwargs(self) -> dict[str, float]:
+        """Keyword arguments for piper-tts <= 1.2."""
+        pairs = {"length_scale": self.length_scale, "noise_scale": self.noise_scale,
+                 "noise_w": self.noise_w}
+        return {k: v for k, v in pairs.items() if v is not None}
+
+    def is_default(self) -> bool:
+        return not self.old_kwargs()
 
 
 def piper_api(voice: Any) -> str:
@@ -38,35 +62,38 @@ def piper_api(voice: Any) -> str:
     return "chunks"
 
 
-def _make_syn_config(length_scale: float | None) -> Any:
-    if length_scale is None:
+def _make_syn_config(settings: Synthesis) -> Any:
+    if settings.is_default():
         return None
     try:
         from piper import SynthesisConfig
     except ImportError:  # pragma: no cover - only very unusual builds
         from piper.config import SynthesisConfig
-    return SynthesisConfig(length_scale=length_scale)
+    return SynthesisConfig(
+        length_scale=settings.length_scale,
+        noise_scale=settings.noise_scale,
+        noise_w_scale=settings.noise_w,
+    )
 
 
 def iter_piper_audio(
     voice: Any,
     text: str,
-    length_scale: float | None = None,
+    settings: Synthesis | None = None,
     syn_config_factory: Any = _make_syn_config,
 ) -> Iterator[Audio]:
     """Synthesize ``text`` with any piper-tts version, yielding (pcm_bytes, sample_rate)."""
+    settings = settings or Synthesis()
     api = piper_api(voice)
     if api == "stream_raw":
         rate = int(voice.config.sample_rate)
-        kwargs = {"length_scale": length_scale} if length_scale is not None else {}
-        for raw in voice.synthesize_stream_raw(text, **kwargs):
+        for raw in voice.synthesize_stream_raw(text, **settings.old_kwargs()):
             if raw:
                 yield bytes(raw), rate
     elif api == "wav_file":
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wav:
-            kwargs = {"length_scale": length_scale} if length_scale is not None else {}
-            voice.synthesize(text, wav, **kwargs)
+            voice.synthesize(text, wav, **settings.old_kwargs())
         buf.seek(0)
         with wave.open(buf, "rb") as wav:
             rate = wav.getframerate()
@@ -74,7 +101,7 @@ def iter_piper_audio(
         if pcm:
             yield pcm, rate
     else:
-        syn_config = syn_config_factory(length_scale)
+        syn_config = syn_config_factory(settings)
         for chunk in voice.synthesize(text, syn_config=syn_config):
             pcm = chunk.audio_int16_bytes
             if pcm:
@@ -85,10 +112,10 @@ class PiperTTS:
     """Loads a Piper voice once (thread-safe, lazily) and synthesizes sentences."""
 
     def __init__(self, model_path: Path, config_path: Path | None = None,
-                 length_scale: float | None = 1.0) -> None:
+                 settings: Synthesis | None = None) -> None:
         self.model_path = Path(model_path)
         self.config_path = Path(config_path) if config_path else None
-        self.length_scale = length_scale
+        self.settings = settings or Synthesis()
         self._voice: Any = None
         self._lock = threading.Lock()
 
@@ -111,4 +138,4 @@ class PiperTTS:
 
     def __call__(self, text: str) -> Iterator[Audio]:
         voice = self.load()
-        yield from iter_piper_audio(voice, text, self.length_scale)
+        yield from iter_piper_audio(voice, text, self.settings)

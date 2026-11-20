@@ -49,9 +49,15 @@ class AudioOutput(Protocol):
 class SoundDeviceOutput:
     """sounddevice output; the stream is (re)opened lazily at the voice's sample rate."""
 
-    def __init__(self, device: int | None = None, tail_s: float = 0.1) -> None:
+    def __init__(
+        self, device: int | None = None, tail_s: float = 0.1, latency: str | float = "high"
+    ) -> None:
         self.device = device
         self.tail_s = tail_s  # silence written before stopping, so no hostapi clips the end
+        # "low" latency underruns on Windows MME (audible as choppy speech): Python
+        # writes small blocks and publishes mouth events between them.
+        self.latency = latency
+        self.underflows = 0
         self._stream: Any = None
         self._rate: int | None = None
 
@@ -62,7 +68,8 @@ class SoundDeviceOutput:
             self.close()
         if self._stream is None:
             self._stream = sd.RawOutputStream(
-                samplerate=rate, channels=1, dtype="int16", device=self.device
+                samplerate=rate, channels=1, dtype="int16", device=self.device,
+                latency=self.latency,
             )
             self._rate = rate
         if not self._stream.active:
@@ -70,7 +77,8 @@ class SoundDeviceOutput:
         return self._stream
 
     def write(self, block: bytes, sample_rate: int) -> None:
-        self._ensure(sample_rate).write(block)
+        if self._ensure(sample_rate).write(block):
+            self.underflows += 1
 
     def drain(self) -> None:
         stream = self._stream
