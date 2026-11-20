@@ -19,6 +19,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import re
 import threading
 from collections.abc import Callable
 from datetime import datetime
@@ -33,7 +34,7 @@ from roco.brain.sentences import SentenceSplitter
 from roco.bus import Emotion, EventBus, State
 from roco.config import Config
 from roco.paths import resolve
-from roco.tools.clock import describe_now, local_timezone
+from roco.tools.clock import describe_date, local_timezone
 from roco.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class _Reply:
         self._on_sentence = on_sentence
         self._splitter = SentenceSplitter()
         self._emotion: Emotion | None = None
+        self.first_emotion: Emotion | None = None
         self.sentences: list[str] = []
 
     @property
@@ -79,6 +81,7 @@ class _Reply:
             emotion = Emotion.NEUTRAL
         if emotion != self._emotion:
             self._emotion = emotion
+            self.first_emotion = self.first_emotion or emotion
             self._bus.set_emotion(emotion)
 
     def feed(self, text: str) -> None:
@@ -120,6 +123,8 @@ class OllamaBrain(Brain):
         client: OllamaClient | None = None,
         history: History | None = None,
         clock: Callable[[], datetime] | None = None,
+        history_tags: bool = True,
+        history_tools: bool = True,
     ) -> None:
         self.config = config
         self.bus = bus
@@ -143,6 +148,9 @@ class OllamaBrain(Brain):
         self.history = history
         self._tz = local_timezone(config)
         self._clock = clock or (lambda: datetime.now(self._tz))
+        # Send past replies with their tag and tool trace (see roco.brain.history).
+        self.history_tags = history_tags
+        self.history_tools = history_tools
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ Brain API
@@ -154,10 +162,14 @@ class OllamaBrain(Brain):
             text = (text or "").strip()
             if not text:
                 return ""
-            messages = [self._system_message(), *self.history.messages]
+            started = self._clock()
+            past = self.history.for_model(
+                tags=self.history_tags, tools=self.history_tools, now=started
+            )
+            messages = [self._system_message(), *past]
             messages.append({"role": "user", "content": text})
             try:
-                self._converse(messages, reply, turn)
+                trace = self._converse(messages, reply, turn)
             except OllamaError as exc:
                 log.warning("[turn %d] Ollama failed (%s): %s", turn, exc.kind, exc)
                 return self._apologise(reply, apology_for(exc, self.model))
@@ -168,7 +180,8 @@ class OllamaBrain(Brain):
             if not reply.sentences:
                 log.warning("[turn %d] Model returned no text", turn)
                 return self._apologise(reply, APOLOGY_TANGLED)
-            self.history.add_turn(text, reply.text)
+            emotion = reply.first_emotion.value if reply.first_emotion else None
+            self.history.add_turn(text, reply.text, emotion, trace, at=started)
             return reply.text
 
     def reset(self) -> None:
@@ -185,7 +198,9 @@ class OllamaBrain(Brain):
             str(assistant.get("name", "ROCO")), str(assistant.get("user_name", "Adam"))
         )
         now = self._clock()
-        prompt += f"\n\nIt is currently {describe_now(now)} (local time)."
+        # Date only: the exact time comes from get_current_time, whose answer is spoken-style
+        # (a 7B model misreads "19:58" as "half past seven" when it is in the prompt).
+        prompt += f"\n\nToday is {describe_date(now)}."
         return {"role": "system", "content": prompt}
 
     def _apologise(self, reply: _Reply, apology: str) -> str:
@@ -194,17 +209,30 @@ class OllamaBrain(Brain):
         reply.say(apology)
         return reply.text
 
-    def _converse(self, messages: list[dict[str, Any]], reply: _Reply, turn: int) -> None:
+    def _converse(
+        self, messages: list[dict[str, Any]], reply: _Reply, turn: int
+    ) -> list[dict[str, Any]]:
+        """Run the tool loop. Returns this turn's tool-call and tool-result messages."""
+        start = len(messages)
         schemas = self.registry.schemas() or None
-        for round_no in range(self.max_tool_rounds + 1):
+        retried = False
+        round_no = 0
+        while round_no <= self.max_tool_rounds:
             # The last round goes without tools so the model has to answer in words.
             tools = schemas if round_no < self.max_tool_rounds else None
             content, tool_calls = self._stream_round(messages, tools, reply)
+            if not tool_calls and not reply.sentences and not retried:
+                # qwen2.5 occasionally ends a turn with no text and no tool call (or a bare
+                # tag); one retry nearly always gets a real answer.
+                log.warning("[turn %d] Empty answer (raw %r); retrying once", turn, content[:80])
+                retried = True
+                continue
+            round_no += 1
             if not tool_calls:
-                return
+                break
             if tools is None:
                 log.warning("[turn %d] Model asked for tools after the last round; ignored", turn)
-                return
+                break
             messages.append(
                 {
                     "role": "assistant",
@@ -218,8 +246,9 @@ class OllamaBrain(Brain):
                     result = "Error: malformed tool call (no function name)."
                 else:
                     result = self.registry.call(name, arguments)
-                log.info("[turn %d] tool %s(%s) -> %.200s", turn, name, _short(arguments), result)
+                log.debug("[turn %d] tool %s(%s) -> %.200s", turn, name, _short(arguments), result)
                 messages.append({"role": "tool", "content": result, "tool_name": name or ""})
+        return messages[start:]
 
     def _stream_round(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, reply: _Reply
@@ -227,10 +256,20 @@ class OllamaBrain(Brain):
         parser = EmotionTagParser()
         raw: list[str] = []
         tool_calls: list[Any] = []
+        # Text from the first "{" / "<tool_call>" on is held back: qwen2.5 sometimes writes
+        # a tool call as JSON in its reply instead of a native call, and it must not be spoken.
+        held: list[str] = []
 
         def push(text: str) -> None:
             if parser.decided and (text.strip() or parser.emotion is not None):
                 reply.set_emotion(parser.emotion)
+            if held:
+                held.append(text)
+                return
+            cut = _json_start(text) if tools else -1
+            if cut >= 0:
+                held.append(text[cut:])
+                text = text[:cut]
             reply.feed(text)
 
         for chunk in self.client.stream_chat(messages, tools):
@@ -247,9 +286,60 @@ class OllamaBrain(Brain):
                 tool_calls.extend(calls)
         if not parser.decided:
             push(parser.flush())
+        if held:
+            text_calls, leftover = _text_tool_calls("".join(held), set(self.registry.names()))
+            if text_calls and not tool_calls:
+                log.info("Recovered %d tool call(s) written as text", len(text_calls))
+                tool_calls = text_calls
+            reply.feed(leftover)
         # Text spoken before a tool call ("Let me check.") is delivered now, in order.
         reply.flush()
         return "".join(raw), tool_calls
+
+
+_TOOL_CALL_TAGS = re.compile(r"</?tool_call>", re.IGNORECASE)
+
+
+def _json_start(text: str) -> int:
+    """Index where a tool call written as text may begin, or -1.
+
+    Any "<" counts, since a "<tool_call>" tag can arrive split across chunks; if the
+    held text turns out not to be a tool call it is spoken anyway.
+    """
+    hits = [i for i in (text.find("{"), text.find("<")) if i >= 0]
+    return min(hits) if hits else -1
+
+
+def _text_tool_calls(text: str, known: set[str]) -> tuple[list[dict[str, Any]], str]:
+    """Pull ``{"name": <known tool>, "arguments": {...}}`` objects out of reply text.
+
+    Returns (tool calls, the text that is left to speak). Text that is not a
+    tool call comes back unchanged with no calls, so it is spoken as normal.
+    """
+    cleaned = _TOOL_CALL_TAGS.sub(" ", text)
+    decoder = json.JSONDecoder()
+    calls: list[dict[str, Any]] = []
+    spans: list[tuple[int, int]] = []
+    i = cleaned.find("{")
+    while i >= 0:
+        try:
+            obj, end = decoder.raw_decode(cleaned, i)
+        except json.JSONDecodeError:
+            i = cleaned.find("{", i + 1)
+            continue
+        if isinstance(obj, dict) and obj.get("name") in known:
+            arguments = obj.get("arguments", obj.get("parameters", {}))
+            calls.append({"function": {"name": obj["name"], "arguments": arguments}})
+            spans.append((i, end))
+        i = cleaned.find("{", end)
+    if not calls:
+        return [], text
+    leftover, last = [], 0
+    for start, end in spans:
+        leftover.append(cleaned[last:start])
+        last = end
+    leftover.append(cleaned[last:])
+    return calls, " ".join(part.strip() for part in leftover if part.strip())
 
 
 def _call_parts(call: Any) -> tuple[str | None, dict[str, Any] | str | None]:
@@ -285,5 +375,12 @@ def _short(arguments: Any) -> str:
 def create_brain(
     config: Config, bus: EventBus, registry: ToolRegistry | None = None
 ) -> OllamaBrain:
-    """The brain ``roco chat`` and ``roco run`` use."""
+    """The brain ``roco chat`` and ``roco run`` use.
+
+    Without ``registry``, the standard tools are built (and the reminder scheduler started).
+    """
+    if registry is None:
+        from roco.tools import ToolContext, build_registry
+
+        registry = build_registry(ToolContext(config=config, bus=bus))
     return OllamaBrain(config, bus, registry)

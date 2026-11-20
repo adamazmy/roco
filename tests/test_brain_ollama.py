@@ -200,7 +200,7 @@ def test_multiple_tool_calls_and_rounds(mock, bus, registry):
     assert [m["role"] for m in brain.history.messages] == ["user", "assistant"]
 
 
-def test_history_keeps_only_user_and_final_text(mock, bus, registry):
+def test_history_text_is_user_and_tag_free_final_text(mock, bus, registry):
     mock.script = [
         [tool_calls(("get_current_time", {}))],
         [content("[neutral] Two o'clock.")],
@@ -209,11 +209,11 @@ def test_history_keeps_only_user_and_final_text(mock, bus, registry):
     brain = make_brain(mock.url, bus, registry)
     run(brain, "time?")
     run(brain, "thanks")
-    third = mock.requests[2]["messages"]
-    assert [(m["role"], m["content"]) for m in third[1:]] == [
-        ("user", "time?"),
-        ("assistant", "Two o'clock."),
-        ("user", "thanks"),
+    assert brain.history.messages == [
+        {"role": "user", "content": "time?"},
+        {"role": "assistant", "content": "Two o'clock."},
+        {"role": "user", "content": "thanks"},
+        {"role": "assistant", "content": "You're welcome."},
     ]
 
 
@@ -343,12 +343,61 @@ def test_history_is_persisted_and_reset(mock, isolated_home):
     brain.respond("hi")
     path = isolated_home / "history.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["messages"] == [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "Hello!"},
-    ]
+    user, reply = data["messages"]
+    assert user == {"role": "user", "content": "hi"}
+    assert reply["content"] == "Hello!" and reply["emotion"] == "happy"
+    assert reply["at"]  # when the turn happened, for stamping replayed tool results
 
     again = OllamaBrain(cfg, bus)
     assert len(again.history) == 2
     again.reset()
     assert len(again.history) == 0 and not path.exists()
+
+
+def test_next_turn_replays_tag_and_tool_trace(mock, bus, registry):
+    # Small models copy their past turns: without these they stop tagging and bluff tool use.
+    mock.script = [
+        [tool_calls(("add", {"a": 1, "b": 2}))],
+        [content("[happy] Three.")],
+        [content("[neutral] Sure.")],
+    ]
+    brain = make_brain(mock.url, bus, registry)
+    run(brain, "1+2?")
+    run(brain, "thanks")
+    sent = mock.requests[2]["messages"][1:]
+    assert [m["role"] for m in sent] == ["user", "assistant", "tool", "assistant", "user"]
+    assert sent[1]["tool_calls"][0]["function"] == {"name": "add", "arguments": {"a": 1, "b": 2}}
+    assert sent[2]["content"].startswith("(Old result, fetched at ")
+    assert sent[2]["content"].endswith(") 3")
+    assert sent[3]["content"] == "[happy] Three."
+    assert brain.history.messages[1] == {"role": "assistant", "content": "Three."}
+
+
+def test_empty_answer_is_retried_once(mock, bus):
+    mock.script = [[content("[happy]")], [content("[happy] Here you go.")]]
+    reply, _ = run(make_brain(mock.url, bus), "hi")
+    assert reply == "Here you go."
+    assert len(mock.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        'Let me check. {"name": "add", "arguments": {"a": 1, "b": 2}}',
+        '<tool_call>\n{"name": "add", "arguments": {"a": 1, "b": 2}}\n</tool_call>',
+    ],
+)
+def test_tool_call_written_as_text_is_run_not_spoken(mock, bus, registry, written):
+    mock.script = [tokens("[curious] " + written, 5), [content("[happy] It's three.")]]
+    reply, sentences = run(make_brain(mock.url, bus, registry), "1+2?")
+    assert all("{" not in s and "tool_call" not in s for s in sentences)
+    assert sentences[-1] == "It's three."
+    tool_msgs = [m for m in mock.requests[1]["messages"] if m["role"] == "tool"]
+    assert tool_msgs[0]["content"] == "3" and tool_msgs[0]["tool_name"] == "add"
+
+
+def test_braces_that_are_not_a_tool_call_are_still_spoken(mock, bus, registry):
+    mock.script = [[content("[happy] Sets use {curly} braces.")]]
+    reply, _ = run(make_brain(mock.url, bus, registry), "braces?")
+    assert reply == "Sets use {curly} braces."
+    assert len(mock.requests) == 1

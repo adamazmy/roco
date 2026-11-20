@@ -38,13 +38,23 @@ _CLOSERS = "\"'”’)]}»"
 _INLINE_TAG = re.compile(
     r"\s*\[\s*(?:" + "|".join(e.value for e in Emotion) + r")\s*\]\s*", re.IGNORECASE
 )
+# Short bracketed stage directions the model sometimes adds: "[chuckling]", "[laughs softly]".
+_STAGE_DIRECTION = re.compile(r"\s*\[\s*[A-Za-z][A-Za-z '\-]{0,30}\]\s*")
 _SPACES = re.compile(r"[ \t]+")
+_SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,!?;:])")
 
 
 def clean_sentence(text: str) -> str:
-    """Remove stray emotion tags and squeeze whitespace."""
+    """Remove emotion tags, stage directions and markdown asterisks; squeeze whitespace.
+
+    Square brackets are never meant to be read aloud, so a short bracketed
+    word or phrase is dropped wherever it appears.
+    """
     text = _INLINE_TAG.sub(" ", text)
-    return _SPACES.sub(" ", text).strip()
+    text = _STAGE_DIRECTION.sub(" ", text)
+    text = text.replace("*", "")
+    text = _SPACE_BEFORE_PUNCT.sub(r"\1", _SPACES.sub(" ", text))
+    return text.strip()
 
 
 class SentenceSplitter:
