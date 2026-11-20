@@ -57,6 +57,7 @@ nature; "local" means that all the AI processing stays on your machine.
 | `roco chat [--speak] [--face] [--reset]` | Text chat |
 | `roco doctor` | Checks Ollama, the model, audio devices, model files and extras |
 | `roco auth google` | Connects Google Calendar + Gmail (read-only) |
+| `roco auth outlook` | Connects Outlook.com / Hotmail email (read-only) |
 | `roco download-models` | Downloads openWakeWord models and the Piper voice |
 | `roco demo-face` | Cycles the face through every emotion |
 
@@ -106,6 +107,8 @@ Google Cloud "app" once, so your data only goes between your PC and Google. It i
      enabled: true
      # calendar_id: primary   # or another calendar's id
    ```
+   If your email is Hotmail/Outlook rather than Gmail, keep Google for the calendar
+   and see [Outlook setup](#outlook-setup-hotmail--outlookcom-email) for email.
 8. **Check:** `roco doctor` should show the Google checks as OK. Then try `roco chat`:
    "what's on tomorrow?", "any unread emails?".
 
@@ -122,6 +125,55 @@ Times are shown in `assistant.timezone`.
 
 To disconnect: delete `~/.roco/google_token.json` and remove ROCO's access at
 <https://myaccount.google.com/permissions>.
+
+## Outlook setup (Hotmail / Outlook.com email)
+
+If your email is a Microsoft account (`@hotmail.com`, `@outlook.com`, `@live.com`), ROCO
+can read it instead of Gmail, through Microsoft Graph. It is read-only (`Mail.Read`):
+ROCO never sends, deletes or changes email. Google Calendar keeps working alongside it.
+
+1. **Register an app.** Open <https://entra.microsoft.com> (or
+   <https://portal.azure.com>), sign in with your Microsoft account, then go to
+   *Applications > App registrations > New registration*:
+   - Name: `ROCO`
+   - Supported account types: **Personal Microsoft accounts only**
+   - Redirect URI: leave empty
+
+   If the portal says you need a directory or an Azure subscription first, sign up for
+   the free Azure account it offers, then come back to this step.
+2. **Copy the Application (client) ID** from the app's *Overview* page. There is no
+   client secret: ROCO is a public client.
+3. **Allow the device code sign-in.** *Authentication* (or *Authentication > Settings*):
+   set **Allow public client flows** to **Yes** and save.
+4. **Add the permission.** *API permissions > Add a permission > Microsoft Graph >
+   Delegated permissions*, tick **Mail.Read**, then *Add permissions*.
+5. **Configure ROCO** in `config.yaml`:
+   ```yaml
+   email:
+     provider: outlook
+   outlook:
+     client_id: "paste-the-application-client-id-here"
+   ```
+6. **Sign in:**
+   ```powershell
+   pip install -e ".[outlook]"
+   roco auth outlook
+   ```
+   ROCO prints a code. Open <https://microsoft.com/devicelogin> in any browser, enter it,
+   sign in with your Hotmail address and accept "Read your mail". The token is saved to
+   `~/.roco/outlook_token.json`.
+7. **Check:** `roco doctor` should show `Outlook sign-in` as OK. Then ask `roco chat`:
+   "any unread emails?".
+
+The email tools have the same names as with Gmail (`get_unread_emails`, `search_emails`,
+`read_email`); `email.provider` picks the account. Email ids look like `o1`, `o2`
+(short aliases ROCO maps back to Outlook's long ids). Searches take plain words or
+`from:alice`, `subject:invoice`.
+
+If ROCO says the Outlook sign-in has expired (for example after a long time unused, or
+after you change your Microsoft password), run `roco auth outlook` again. To disconnect:
+delete `~/.roco/outlook_token.json` and remove ROCO at
+<https://account.live.com/consent/Manage>.
 
 ## Development
 
