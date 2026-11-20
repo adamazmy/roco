@@ -100,7 +100,8 @@ def test_request_payload(mock, bus, registry):
     assert req["keep_alive"] == "5m"
     assert {t["function"]["name"] for t in req["tools"]} == {"get_current_time", "add"}
     assert req["messages"][0]["role"] == "system" and "[happy]" in req["messages"][0]["content"]
-    assert req["messages"][-1] == {"role": "user", "content": "how are you"}
+    user = req["messages"][-1]
+    assert user == {"role": "user", "content": "how are you"}
 
 
 def test_no_tools_key_when_registry_empty(mock, bus):
@@ -401,3 +402,26 @@ def test_braces_that_are_not_a_tool_call_are_still_spoken(mock, bus, registry):
     reply, _ = run(make_brain(mock.url, bus, registry), "braces?")
     assert reply == "Sets use {curly} braces."
     assert len(mock.requests) == 1
+
+
+def test_localhost_is_rewritten_to_ipv4_loopback():
+    from roco.brain.ollama import OllamaClient
+
+    assert OllamaClient("http://localhost:11434/").host == "http://127.0.0.1:11434"
+    assert OllamaClient("http://192.168.1.20:11434").host == "http://192.168.1.20:11434"
+
+
+def test_connection_is_reused_between_turns(mock, bus):
+    mock.script = [[content("[happy] One.")], [content("[happy] Two.")]]
+    brain = make_brain(mock.url, bus)
+    ports = []
+    original = mock.server.RequestHandlerClass.do_POST
+
+    def recording(handler):
+        ports.append(handler.client_address[1])
+        original(handler)
+
+    mock.server.RequestHandlerClass.do_POST = recording
+    run(brain, "a")
+    run(brain, "b")
+    assert len(ports) == 2 and ports[0] == ports[1]  # same TCP connection

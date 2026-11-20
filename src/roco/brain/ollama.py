@@ -46,7 +46,7 @@ class OllamaClient:
         timeout_s: float = 120.0,
         connect_timeout_s: float = 5.0,
     ) -> None:
-        self.host = host.rstrip("/")
+        self.host = _prefer_ipv4_loopback(host.rstrip("/"))
         self.model = model
         self.temperature = temperature
         self.num_ctx = num_ctx
@@ -96,14 +96,26 @@ class OllamaClient:
                         raise OllamaError("protocol", f"unexpected chunk: {line[:80]!r}")
                     if chunk.get("error"):
                         raise OllamaError("server", str(chunk["error"]))
+                    # No early return on "done": reading the stream to its end lets httpx
+                    # put the connection back in the pool instead of closing it.
                     yield chunk
-                    if chunk.get("done"):
-                        return
         except httpx.TimeoutException as exc:
             raise OllamaError("timeout", f"Ollama timed out ({exc.__class__.__name__})") from exc
         except httpx.TransportError as exc:
             # ConnectError, ReadError, RemoteProtocolError...: Ollama not running or died.
             raise OllamaError("unreachable", f"cannot reach Ollama at {self.host}: {exc}") from exc
+
+
+def _prefer_ipv4_loopback(host: str) -> str:
+    """``http://localhost:11434`` -> ``http://127.0.0.1:11434``.
+
+    On Windows "localhost" resolves to ::1 first; Ollama listens on IPv4 only, so
+    every new connection waited about 2 s for the IPv6 attempt to fail.
+    """
+    url = httpx.URL(host)
+    if url.host == "localhost":
+        return str(url.copy_with(host="127.0.0.1")).rstrip("/")
+    return host
 
 
 def _status_error(resp: httpx.Response, model: str) -> OllamaError:
