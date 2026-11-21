@@ -163,11 +163,12 @@ def test_cli_download_models_uses_force_flag(monkeypatch):
     assert seen == {"force": True}
 
 
-def test_cli_run_fails_cleanly_without_voice_setup(capsys):
-    # CI: no voice extra; locally: no models in the isolated ROCO_HOME.
-    assert cli.main(["run"]) == cli.EXIT_FAIL
+@pytest.mark.parametrize("argv", [["run"], ["run", "--legacy"], ["body"]])
+def test_cli_run_fails_cleanly_without_voice_setup(capsys, argv):
+    # CI: no voice/body extra; locally: no models in the isolated ROCO_HOME.
+    assert cli.main(argv) == cli.EXIT_FAIL
     err = capsys.readouterr().err
-    assert "roco download-models" in err or 'pip install -e ".[voice]"' in err
+    assert "roco download-models" in err or "pip install -e" in err
 
 
 def test_voice_checks_are_registered_in_doctor():

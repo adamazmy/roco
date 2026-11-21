@@ -78,6 +78,29 @@ DEFAULTS: dict[str, Any] = {
             "noise_floor_margin": 2.5,
         },
         "followup_s": 5.0,
+        # Body client (roco body / roco run): end of speech is decided on the body.
+        "vad": {
+            "engine": "silero",  # silero | energy
+            "threshold": 0.5,
+            "trailing_ms": 450,  # silence that ends a turn (fast; raise if it cuts you off)
+            "start_ms": 96,
+            "max_s": 15.0,
+            "start_timeout_s": 4.0,
+        },
+        # Echo cancellation keeps the mic open while ROCO talks (barge-in).
+        "aec": {
+            "engine": "auto",  # auto (webrtc, else speex, else none) | webrtc | speex | none
+            "min_erle_db": 10.0,  # weaker than this while speaking -> wake-word barge-in
+        },
+        "barge_in": {
+            "mode": "speech",  # speech (any speech, needs AEC) | wake_word | off
+            "threshold": 0.6,
+            "start_ms": 160,
+        },
+        "playback": {
+            "rate": 22050,  # reopened at the brain's tts_rate on connect
+            "latency": "low",  # PortAudio output latency: low | high | seconds
+        },
         "stt": {
             "model": "base.en",
             "device": "cpu",
