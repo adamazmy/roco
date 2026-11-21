@@ -26,9 +26,10 @@ log = logging.getLogger(__name__)
 Audio = tuple[bytes, int]  # (int16 mono PCM, sample rate)
 
 # Smoother than the voices' own defaults (noise 0.667, noise_w 0.8), which sound choppy.
-# Chosen by ear in A/B listening tests, on en_GB-alan-medium and again on en_GB-cori-high.
-DEFAULT_NOISE_SCALE = 0.5
-DEFAULT_NOISE_W = 0.333
+# Chosen by ear in A/B listening tests: 0.5 / 0.333 in Phase 2, then 0.4 / 0.25 with
+# length_scale 1.08 and roco.voice.postfx in the Phase 3 A/B (scripts/voice_ab.py).
+DEFAULT_NOISE_SCALE = 0.4
+DEFAULT_NOISE_W = 0.25
 
 
 @dataclass(frozen=True)

@@ -74,6 +74,19 @@ DEFAULTS: dict[str, Any] = {
             "keep_tail_s": 1.0,
         },
     },
+    "personality": {
+        # chill | default | unhinged | professional (docs/ROCO_SPEC.md §2.1). Any of
+        # roast, flirt, sass, chattiness, proactivity, energy (0-100) and the switches
+        # sensitive_topics_ok, roast_guests, tone_down_with_guests can be set here too,
+        # over the preset. Changes made by voice ("ROCO, roast level max") are saved in
+        # `file` and win over this section until "ROCO, back to normal".
+        "preset": "default",
+        "file": "personality.json",  # relative paths live in ~/.roco
+        "people_file": "people.json",
+        # Per-person profiles over the built-in ones (Adam, Yousaf), e.g.
+        # {"yousaf": {"overrides": {"roast": 100}}}. See roco.personality.people.
+        "people": {},
+    },
     "history": {
         "max_turns": 12,
         "persist": True,
@@ -106,8 +119,25 @@ DEFAULTS: dict[str, Any] = {
             "vad_filter": True,
         },
         "tts": {
+            # piper | kokoro (docs/ROCO_SPEC.md §3; scripts/voice_ab.py compares them).
+            "engine": "piper",
+            # Piper: voice name (or .onnx path) and synthesis settings. Slightly slower and
+            # less jittery than the voice's defaults: Adam's pick in the Phase 3 A/B.
             "voice": "en_GB-cori-high",
-            "length_scale": 1.0,
+            "length_scale": 1.08,
+            "noise_scale": 0.4,
+            "noise_w": 0.25,
+            # Light EQ + soft compression + small room (roco.voice.postfx): false, true
+            # or a mapping such as {"reverb": 0.1, "compress": false}.
+            "postfx": True,
+            "kokoro": {
+                "voice": "bf_emma",
+                "speed": 1.0,
+                "lang": "en-gb",
+                "model": "kokoro-v1.0.onnx",  # names live in ~/.roco/models/kokoro
+                "voices": "voices-v1.0.bin",
+                "threads": None,  # onnxruntime CPU threads; None = all cores
+            },
         },
     },
     "face": {

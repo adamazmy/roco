@@ -109,15 +109,15 @@ def test_real_synthesis_config_gets_smooth_defaults(config):
     from roco.voice.factory import create_tts
     from roco.voice.tts import _make_syn_config
 
-    tts = create_tts(config)
-    assert tts.settings == Synthesis(1.0, 0.5, 0.333)
+    tts = create_tts(config).inner  # wrapped in the post-processing by default
+    assert tts.settings == Synthesis(1.08, 0.4, 0.25)
     syn = _make_syn_config(tts.settings)
     assert isinstance(syn, piper.SynthesisConfig)
-    assert (syn.noise_scale, syn.noise_w_scale, syn.length_scale) == (0.5, 0.333, 1.0)
+    assert (syn.noise_scale, syn.noise_w_scale, syn.length_scale) == (0.4, 0.25, 1.08)
 
 
 def test_tts_settings_overridable_from_config(config):
     from roco.voice.factory import create_tts
 
-    config["voice"]["tts"].update({"noise_w": None, "length_scale": 1.1})
-    assert create_tts(config).settings == Synthesis(1.1, 0.5, None)
+    config["voice"]["tts"].update({"noise_w": None, "length_scale": 1.1, "postfx": False})
+    assert create_tts(config).settings == Synthesis(1.1, 0.4, None)
