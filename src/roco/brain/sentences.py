@@ -70,8 +70,40 @@ _STAGE_DIRECTION = re.compile(r"\s*\[\s*[A-Za-z][A-Za-z0-9_ '\-]{0,30}\]\s*")
 # ("Here they are: - From Kiwi.com ... - From UNiDAYS ..."). A hyphen between words or
 # numbers ("ten - fifteen") is left alone.
 _BULLET = re.compile(r"(^|[:.!?]\s*)\s*(?:[-*•]|\d{1,2}[.)])\s+")
+# Emoji and pictographs: the persona forbids them, but qwen2.5 still adds the odd "😴",
+# which Piper reads out or garbles.
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿️‍]+")
 _SPACES = re.compile(r"[ \t]+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,!?;:])")
+
+
+_CLOCK = re.compile(r"(?<![\d:.])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])")
+_DAY_PART = re.compile(r"\b(?:in the (?:morning|afternoon|evening)|at night|midnight|midday)\b",
+                       re.IGNORECASE)
+
+
+def say_clock_times(text: str) -> str:
+    """"10:00 to 10:15" -> "ten o'clock to quarter past ten".
+
+    The tools already give times in words, but qwen2.5 sometimes rewrites them as digits
+    (seen live reading the calendar), which Piper reads badly. If the sentence already
+    says the part of day, it isn't repeated after every time.
+    """
+    if not _CLOCK.search(text):
+        return text
+    from datetime import datetime
+
+    from roco.tools.clock import spoken_time
+
+    keep_part = not _DAY_PART.search(text)
+
+    def spoken(m: re.Match[str]) -> str:
+        phrase = spoken_time(datetime(2000, 1, 1, int(m.group(1)), int(m.group(2))))
+        if not keep_part and phrase not in ("midnight", "midday"):
+            phrase = _DAY_PART.sub("", phrase).strip()
+        return phrase
+
+    return _CLOCK.sub(spoken, text)
 
 
 def clean_sentence(text: str) -> str:
@@ -83,6 +115,8 @@ def clean_sentence(text: str) -> str:
     text = _INLINE_TAG.sub(" ", text)
     text = _STAGE_DIRECTION.sub(" ", text)
     text = _BULLET.sub(r"\1 ", text.strip())
+    text = _EMOJI.sub(" ", text)
+    text = say_clock_times(text)
     text = text.replace("*", "").replace(" | ", ", ").replace("|", " ")
     text = _SPACE_BEFORE_PUNCT.sub(r"\1", _SPACES.sub(" ", text))
     return text.strip()

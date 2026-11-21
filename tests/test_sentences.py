@@ -120,3 +120,25 @@ def test_only_the_first_chunk_is_split_on_joining_words():
         "Sure thing.",
         "Your next meeting is tomorrow at ten with the design team.",
     ]
+
+
+def test_emoji_are_not_read_aloud():
+    from roco.brain.sentences import clean_sentence
+
+    assert clean_sentence("Are you developing insomnia? \U0001f634") == (
+        "Are you developing insomnia?"
+    )
+    assert clean_sentence("Nice one ❤️ mate.") == "Nice one mate."
+
+
+def test_clock_times_written_as_digits_are_said_in_words():
+    from roco.brain.sentences import clean_sentence
+
+    assert clean_sentence("A test event from 10:00 to 10:15 in the morning.") == (
+        "A test event from ten o'clock to quarter past ten in the morning."
+    )
+    assert clean_sentence("Meeting at 22:00.") == "Meeting at ten o'clock at night."
+    assert clean_sentence("It is 00:00.") == "It is midnight."
+    # Not clock times: ratios, versions, thousands.
+    for text in ("Score was 2:1.", "Version 3.10:00 stays.", "About 10,000 of them."):
+        assert clean_sentence(text) == text

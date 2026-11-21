@@ -64,7 +64,7 @@ _LEAD = re.compile(rf"^(?:{_NAMES}\s+)+")
 _TRAIL = re.compile(rf"(?:\s+{_NAMES})+$")
 _FILLER = re.compile(
     r"^(?:(?:please|can you|could you|would you|will you|right|okay|ok|now|so|and|just|"
-    r"i want|i'd like|let's|lets|go ahead and|time for|time to)\s+)+"
+    r"i want|i'd like|let's|lets|go ahead and|time for|time to|yes|yeah|no(?: no)+)\s+)+"
 )
 _TAIL_FILLER = re.compile(r"(?:\s+(?:please|now|then|thanks|thank you|for me|mate|again))+$")
 
@@ -74,6 +74,8 @@ def normalise(text: str) -> str:
     t = text.lower().replace("’", "'").replace("%", " percent")
     t = re.sub(r"[^a-z0-9' ]+", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
+    # Whisper often hears "unhinged" as "on hinged" / "un hinged".
+    t = re.sub(r"\b(?:on|un|an) hinged\b", "unhinged", t)
     t = _LEAD.sub("", t)
     t = _TRAIL.sub("", t)
     t = _FILLER.sub("", t)
@@ -106,13 +108,17 @@ _PRESET = "|".join(PRESET_ALIASES)
 
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # presets
-    (re.compile(rf"(?:switch to |go into |go |enter |activate |turn on |use |be )?"
-                rf"{_THE}(?P<preset>{_PRESET}) (?:mode|preset|personality|setting)(?: on)?"),
+    (re.compile(rf"(?:switch to |go into |go in |go to |go on |go |get into |enter |"
+                rf"activate |turn on |use |be |put on |switch on )?"
+                rf"{_THE}(?P<preset>{_PRESET}) (?:mode|preset|personality|setting|form|mood)"
+                rf"(?: on)?"),
      "preset"),
     (re.compile(r"(?:go|get|be|going|getting) (?P<preset>unhinged|feral|savage)"), "preset"),
     (re.compile(r"(?:be (?P<preset>professional|chill|polite|normal))"), "preset"),
     (re.compile(r"(?:behave|behave yourself|chill out|tone it down|calm it down|"
                 r"dial it back|easy tiger)"), "behave"),
+    # A short utterance ending in "behave": Whisper garbles the start ("and drive us behave").
+    (re.compile(r"(?:[a-z']+ ){1,2}behave(?: yourself)?"), "behave"),
     (re.compile(r"(?:back to normal|be yourself|reset (?:your )?personality|"
                 r"reset (?:your )?settings|personality reset|go back to normal)"), "reset"),
     # status

@@ -186,6 +186,8 @@ class _Reply:
             return  # barge-in: nothing more is said or stored
         if self._transform is not None:
             sentence = self._transform(sentence)
+            if not sentence.strip():
+                return  # the personality filter dropped it (e.g. a copied example line)
         if self._emotion is None:
             self.set_emotion(None)
         self.sentences.append(sentence)
