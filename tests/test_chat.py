@@ -84,12 +84,17 @@ def test_cli_chat_end_to_end_with_mock_ollama(monkeypatch, capsys, tmp_path):
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text(f"llm:\n  host: {server.url}\n", encoding="utf-8")
         monkeypatch.setattr("builtins.input", lines("hi there", "/quit"))
+        # Whether pygame is installed or not, behave as if no display is available.
+        monkeypatch.setattr(
+            "roco.brain.chat._start_face", lambda cfg, bus: (None, None, "no display")
+        )
         assert cli.main(["-c", str(cfg_file), "chat", "--reset", "--speak", "--face"]) == 0
     finally:
         server.close()
     captured = capsys.readouterr()
     assert "ROCO> Hello Adam. Nice to see you!" in captured.out
-    # B and C have not shipped their factories on this branch: clear message, text continues.
+    # No voice extra (CI) or no voice model in the test's ROCO_HOME (dev machine), and no
+    # display: a clear message for each, and the text conversation continues.
     assert "Speech is not available" in captured.err
     assert "The face is not available" in captured.err
     assert server.requests[0]["messages"][-1]["content"].startswith("hi there")
@@ -136,6 +141,8 @@ def test_start_face_falls_back_to_create_face(monkeypatch, config, bus):
     fake = types.ModuleType("roco.body.factory")
     fake.create_face = lambda cfg: NullFace()
     monkeypatch.setitem(__import__("sys").modules, "roco.body.factory", fake)
+    # roco.body itself exports C's real create_body: only look in the fake module.
+    monkeypatch.setattr(chat, "FACE_MODULES", ("roco.body.factory",))
     face, body, why = chat._start_face(config, bus)
     bus.set_emotion(Emotion.HAPPY)
     assert face.emotion == Emotion.HAPPY  # base Body attached to the bus
