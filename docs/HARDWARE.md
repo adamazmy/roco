@@ -1,75 +1,118 @@
 # Hardware: the v1 body
 
+The product spec ([`ROCO_SPEC.md`](ROCO_SPEC.md) §4) is the source of truth; this page is
+the shopping list, the wiring and the board notes. Setting the Pi up is in
+[`PI_SETUP.md`](PI_SETUP.md).
+
 ## Split: brain on the PC, body on the Pi
 
-A Raspberry Pi 5 can run wake word, speech-to-text (`base.en`), Piper and the face
-comfortably, but a 7B model on its CPU manages only a couple of tokens per second, far too
-slow for conversation. So in v1:
+The Pi 5 (2 GB) is the **body only** (spec §9). A 7B model on a Pi CPU manages a couple
+of tokens per second and does not fit next to everything else in 2 GB, so:
 
-- **Pi 5 (body):** runs `roco run`: wake word, recording, faster-whisper, Piper, pygame face
-  in fullscreen, servos via PCA9685.
-- **PC (brain):** runs Ollama only. Set `OLLAMA_HOST=0.0.0.0` on the PC so it listens on the
-  LAN, and point the Pi's `llm.host` at it (e.g. `http://192.168.1.20:11434`). Give the PC a
-  DHCP reservation so the address doesn't change.
+- **PC (brain):** `roco brain`: speech-to-text, Ollama `qwen2.5:7b`, TTS, tools, memory.
+- **Pi 5 (body):** `roco body` as a systemd service: mic, wake word, VAD, echo
+  cancellation, playback, face, servos. Talks to the brain over one WebSocket on port 8765
+  ([`PROTOCOL.md`](PROTOCOL.md)), on the home LAN or over Tailscale when away.
+- **Fallback (on the Pi):** when the PC brain is unreachable the body transcribes with
+  whisper `tiny.en` and asks Claude directly (`claude-haiku-5-5`); with no internet it says a
+  canned "my brain's offline" line in its own local voice (`roco.fallback`).
 
-## Parts list
+## Parts
 
-| Part | Suggestion | Notes |
+### Ordered (Round 1): The Pi Hut "Raspberry Pi 5 Starter Kit", 2 GB
+
+| Part | In the kit | Notes |
 |---|---|---|
-| Computer | Raspberry Pi 5, 4 GB or 8 GB | 8 GB leaves room for `small.en` STT later |
-| Power | Official Raspberry Pi 27 W USB-C PSU | Needed so USB devices get full current |
-| Cooling | Official Active Cooler | Whisper keeps the CPU busy |
-| Storage | 32 GB+ A2 microSD (or NVMe HAT) | |
-| Microphone | ReSpeaker USB Mic Array v2.0 (or Lite) | Far-field, on-board AEC/beamforming helps barge-in later |
-| Speaker | Small USB speaker, or MAX98357A I2S amp + 3 W 4 Ω speaker | I2S is tidier inside an enclosure |
-| Display | 5" DSI or HDMI display, 800×480 | Matches the default face size; set `face.fullscreen: true` |
-| Servo driver | PCA9685 16-channel PWM board (I2C) | |
-| Servos | 2 × MG90S (metal gear) | Pan + tilt |
-| Bracket | Mini pan/tilt bracket for SG90/MG90S | |
-| Servo power | Separate 5 V 2–3 A supply (or buck converter) | Never power servos from the Pi's 5 V pin |
+| Computer | Raspberry Pi 5, 2 GB | Body only, see above |
+| Power | Official Raspberry Pi 27 W USB-C PSU | Full current for the USB mic/speaker/webcam |
+| Case + cooling | Official Pi 5 case with built-in fan | **The lid lifts off** to reach the 40-pin GPIO header (needed for the PCA9685 in Round 2); the fan stays on its connector |
+| Storage | Official 64 GB microSD, Raspberry Pi OS preinstalled | See [`PI_SETUP.md`](PI_SETUP.md) step 1 to make it headless |
+| Display cable | micro-HDMI to HDMI | For the Round 2 screen (use the port next to the USB-C power, HDMI0) |
 
-## Wiring
+That is enough for Phase 3: the Pi runs the body client headless (no screen, no servos
+yet) and can be tested with any USB headset or USB mic + speaker you already have.
 
-### PCA9685 → Pi 5 (I2C)
+### Round 2 shopping list (buy before Phase 4)
 
-| PCA9685 | Pi 5 header |
+| Part | Suggestion | Approx. | Why |
+|---|---|---|---|
+| Screen | 4–5" HDMI display, 800×480, USB-powered | £20–35 | Upward-facing, reflected by the acrylic = hologram head |
+| Camera | USB webcam, 720p+ | £10–20 | Face/hand tracking on the Pi |
+| Microphone | USB mic (small omni/boundary mic) | £8–15 | Wake word + speech; AEC is software (`roco.voice.aec`) |
+| Speaker | Small USB-powered speaker | £8–15 | ROCO's voice |
+| Servo driver | PCA9685 16-channel PWM board (I2C, 0x40) | £5–8 | Drives the pan/tilt servos |
+| Servos | 2 × MG90S (metal gear) | £8 | Pan + tilt |
+| Bracket | Mini pan/tilt bracket for SG90/MG90S | £4 | The neck |
+| Servo power | Separate 5 V, 2–3 A supply (barrel/USB) + female DC jack or screw terminals | £6–10 | **Never** power servos from the Pi |
+| Capacitor | 470–1000 µF, ≥10 V electrolytic | £1 | Across the servo supply, absorbs current spikes |
+| Wires | Female–female jumper wires (4 for I2C), a few male–male | £3 | Pi ↔ PCA9685 |
+| Hologram | Clear acrylic sheet (cheap photo-frame glass replacement) | £3–5 | Pepper's ghost at 45° |
+| Enclosure | Black foam board + glue/tape | £5 | Dark box with an open front |
+
+**Later upgrades** (spec §4; config changes only): ReSpeaker USB Mic Array v2.0 (hardware
+AEC + voice direction, first upgrade), Pi AI Camera, a bigger Pi (8 GB: on-Pi backup LLM),
+a DSI display, touch (MPR121 + copper tape), knock sensor (piezo), poke detection
+(VL53L1X), mute switch + LED.
+
+## Wiring (Round 2)
+
+Power everything **off** while wiring. Lift the case lid to reach the GPIO header; pin 1 is
+the corner pin nearest the microSD-card end of the board, marked by the square pad.
+
+### PCA9685 → Pi 5 (I2C bus 1)
+
+| PCA9685 pin | Pi 5 header pin |
 |---|---|
-| VCC (logic) | Pin 1 (3.3 V) |
+| VCC (logic power) | Pin 1 (3.3 V) |
 | GND | Pin 6 (GND) |
 | SDA | Pin 3 (GPIO2 / SDA1) |
 | SCL | Pin 5 (GPIO3 / SCL1) |
-| V+ (servo power terminal) | External 5 V supply + |
-| GND (terminal) | External 5 V supply − **and** common with Pi GND |
+| OE | not connected |
 
-Servos: pan on channel 0, tilt on channel 1 (configurable under `servos.pan/tilt.channel`).
-Enable I2C with `sudo raspi-config` → Interface Options → I2C, then check the board shows up
-at `0x40` with `i2cdetect -y 1`. Install the `pi` extra: `pip install -e ".[pi]"` and set
-`servos.backend: pca9685`.
+### Servo power (separate supply, common ground)
 
-Start with conservative limits (`min`/`max` in config) and widen them once you've seen the
-bracket's real range: MG90S servos will happily strip a bracket that hits an end stop.
-Add a 470–1000 µF capacitor across the servo supply to absorb current spikes.
+```
+ 5 V 2-3 A supply (+) ──────┬──────────────── PCA9685 V+ terminal
+                            │
+                          [470-1000 µF]   long leg / + side to +5 V
+                            │
+ 5 V 2-3 A supply (−) ──────┴──────┬───────── PCA9685 GND terminal
+                                   │
+                                   └───────── Pi GND (e.g. pin 9)   ← common ground
+ MG90S pan  → PCA9685 channel 0  (brown = GND, red = V+, orange = PWM)
+ MG90S tilt → PCA9685 channel 1
+```
 
-### MAX98357A I2S amp (optional, instead of USB speaker)
+- The servos take their current from the **V+ terminal** (separate supply), never from
+  the Pi's 5 V pins: a stalled MG90S draws ~0.7 A and would brown out the Pi.
+- **Common ground**: the servo supply's − must be joined to a Pi GND, or the PWM signal has
+  no reference and the servos jitter.
+- The capacitor goes across V+ and GND at the PCA9685 terminal; mind the polarity.
+- Channels are configurable under `servos.pan/tilt.channel`.
 
-| MAX98357A | Pi 5 header |
-|---|---|
-| VIN | Pin 2 (5 V) |
-| GND | Pin 9 (GND) |
-| BCLK | Pin 12 (GPIO18) |
-| LRC | Pin 35 (GPIO19) |
-| DIN | Pin 40 (GPIO21) |
+### Checks once wired
 
-Add `dtoverlay=hifiberry-dac` (or `max98357a`) to `/boot/firmware/config.txt` and reboot.
+```bash
+i2cdetect -y 1          # the board shows up as 40
+```
 
-### Display
+Then in `~/.roco/config.yaml` set `servos.backend: pca9685` and restart the service. Start
+with the conservative `min`/`max` limits from the default config and widen them only once
+you've seen the bracket's real range: MG90S servos will happily strip a bracket that hits
+an end stop. `pi_setup.sh` already enabled I2C and installed the `pi` extra.
 
-DSI: ribbon cable to a DSI port, it powers from the Pi. HDMI: micro-HDMI port 0, power the
-display from its own USB. Disable screen blanking (`raspi-config` → Display Options) so the
-face stays on.
+### Screen, camera, mic, speaker
+
+- HDMI screen: micro-HDMI port HDMI0, power from its own USB lead. In the config:
+  `face.enabled: true`, `face.fullscreen: true`. Disable screen blanking
+  (`sudo raspi-config nonint do_blanking 1`).
+- USB webcam, mic and speaker: any USB port (the blue USB 3 ports for the webcam). Pick the
+  devices with `voice.input_device` / `voice.output_device` (a name substring) after
+  checking them with `python -m roco.voice.diag devices` on the Pi.
 
 ## Software on the Pi
 
-Raspberry Pi OS (64-bit, Bookworm), Python 3.11, then
-`pip install -e ".[voice,face,pi]"`, `roco download-models`, `roco doctor`, `roco run`.
+Raspberry Pi OS Bookworm 64-bit, Python 3.11, everything installed by
+[`scripts/pi_setup.sh`](../scripts/pi_setup.sh): `pip install -e ".[body,pi,cloud]"`, the
+wake-word/VAD/Piper/whisper `tiny.en` models, I2C, and the `roco-body` systemd service.
 On Linux openWakeWord can also use tflite, but ONNX works everywhere and keeps one code path.
