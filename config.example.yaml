@@ -44,8 +44,25 @@ voice:
     device: cpu            # or cuda
     compute_type: int8
   tts:
+    engine: piper          # piper | kokoro (pip install kokoro-onnx; slower, PC only)
     voice: en_GB-cori-high
-    length_scale: 1.0      # >1 slower, <1 faster
+    length_scale: 1.08     # >1 slower, <1 faster
+    noise_scale: 0.4       # lower = less jitter
+    noise_w: 0.25
+    postfx: true           # gentle EQ, soft compression, small room
+    # kokoro: {voice: bf_emma, speed: 1.0}
+
+personality:
+  preset: default          # chill | default | unhinged | professional
+  # Any level 0-100 over the preset: roast, flirt, sass, chattiness, proactivity, energy
+  # roast: 70
+  # sensitive_topics_ok: false
+  # roast_guests: true
+  # tone_down_with_guests: true
+  # Voice changes ("ROCO, roast level max") are saved in ~/.roco/personality.json and win
+  # over this section until "ROCO, back to normal".
+  # people:
+  #   yousaf: {overrides: {roast: 100}}
 
 face:
   enabled: true

@@ -136,8 +136,9 @@ def test_factory_selects_engine_and_postfx(config, isolated_home):
     from roco.voice.postfx import ProcessedTTS
     from roco.voice.tts import PiperTTS
 
+    config["voice"]["tts"]["postfx"] = False
     assert isinstance(factory.create_tts(config), PiperTTS)
-    config["voice"]["tts"]["postfx"] = True
+    config["voice"]["tts"]["postfx"] = True  # the default
     tts = factory.create_tts(config)
     assert isinstance(tts, ProcessedTTS) and isinstance(tts.inner, PiperTTS)
     config["voice"]["tts"].update(engine="kokoro", postfx=False)

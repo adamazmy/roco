@@ -87,7 +87,7 @@ def create_tts(cfg: Config) -> Any:
     elif engine == "piper":
         onnx, config_json = piper_voice_paths(cfg)
         settings = Synthesis(
-            length_scale=setting("length_scale", 1.0),
+            length_scale=setting("length_scale", 1.08),
             noise_scale=setting("noise_scale", DEFAULT_NOISE_SCALE),
             noise_w=setting("noise_w", DEFAULT_NOISE_W),
         )

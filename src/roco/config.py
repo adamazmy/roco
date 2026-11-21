@@ -101,14 +101,15 @@ DEFAULTS: dict[str, Any] = {
         "tts": {
             # piper | kokoro (docs/ROCO_SPEC.md §3; scripts/voice_ab.py compares them).
             "engine": "piper",
-            # Piper: voice name (or .onnx path) and synthesis settings.
+            # Piper: voice name (or .onnx path) and synthesis settings. Slightly slower and
+            # less jittery than the voice's defaults: Adam's pick in the Phase 3 A/B.
             "voice": "en_GB-cori-high",
-            "length_scale": 1.0,
-            "noise_scale": 0.5,
-            "noise_w": 0.333,
+            "length_scale": 1.08,
+            "noise_scale": 0.4,
+            "noise_w": 0.25,
             # Light EQ + soft compression + small room (roco.voice.postfx): false, true
             # or a mapping such as {"reverb": 0.1, "compress": false}.
-            "postfx": False,
+            "postfx": True,
             "kokoro": {
                 "voice": "bf_emma",
                 "speed": 1.0,

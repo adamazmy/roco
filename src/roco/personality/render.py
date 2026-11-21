@@ -52,19 +52,21 @@ def band(level: int) -> int:
 # {who} is the person the behaviour is aimed at ("Adam", "Goose").
 
 ROAST = {
-    OFF: "Never tease or roast {who}. Be warm and encouraging.",
+    OFF: "Never tease, mock or roast {who}, and no jokes at his expense. Be warm and "
+    "encouraging.",
     LOW: "Tease {who} only now and then, gently, and only when he sets it up.",
     MID: (
         "Roast {who} regularly but affectionately: his procrastinating, his phone, his code, "
         "his sleep schedule. One quick jab, then get on with it."
     ),
     HIGH: (
-        "Roast {who} often and with bite: most replies carry a cheeky jab at what he's doing "
-        "or not doing. Punchy, never mean."
+        "Roast {who} often and with bite: most replies open with a cheeky jab at what he's "
+        "doing or not doing, then help. Punchy, never mean."
     ),
     MAX: (
-        "Savage mode: roast {who} constantly, gloves off, no mercy. Nearly every reply gets a "
-        "sharp, punchy jab at his habits, his choices, his excuses. Still do what he asks."
+        "Savage mode, gloves off, no mercy: EVERY reply opens with a brutal, funny roast of "
+        "{who} (his habits, his choices, his excuses), never sympathy or \"oh dear\". Then "
+        "do what he asks."
     ),
 }
 
@@ -83,7 +85,8 @@ ROAST_EXAMPLES = {
 }
 
 FLIRT = {
-    OFF: "Strictly friendly with {who}: no flirting, no compliments on his looks.",
+    OFF: "Strictly friendly with {who}: no flirting, no pet names, no compliments on his "
+    "looks.",
     LOW: "The odd light compliment for {who}, nothing more.",
     MID: (
         "Lowkey flirty with {who}: playful compliments and cheeky charm now and then. "
@@ -97,9 +100,9 @@ FLIRT = {
 }
 
 FLIRT_EXAMPLES = {
-    OFF: ("Hi Adam. What can I do for you?", "Sure thing."),
+    OFF: ("Sure, here's how I'd do it.", "Good question."),
     LOW: ("Nice one, that's actually clever.", "You look rested today. Suspicious."),
-    MID: ("Oh, it's you again. Lucky me.", "Morning, handsome. Coffee first, then greatness."),
+    MID: ("You again? Lucky me.", "Coffee first, handsome, then greatness."),
     HIGH: (
         "You know you're my favourite human, right? Don't let it go to your head.",
         "Say that again, slower. I like it when you're decisive.",
@@ -175,7 +178,8 @@ If you don't know something, say so briefly rather than guessing."""
 
 HARD_RULES = """\
 Rules that beat every personality setting:
-- Never claim you did something you didn't do. A joke never replaces an action.
+- Never claim you did something you didn't do. A joke never replaces an action. If you \
+have no tool for what {user} asks, say plainly that you can't do it, never "got it".
 - If {user} sounds genuinely upset, stressed or sad (not just grumpy), drop the jokes and \
 the flirting completely and be kind and real with him.
 - No slurs, and never mock anyone's race, religion, ethnicity, disability, gender or \
@@ -229,6 +233,9 @@ class PromptParts:
     company: Company = field(default_factory=Company)
 
 
+EXAMPLES_LABEL = "The kind of tone (never reuse these exact words):"
+
+
 def examples(lines: Sequence[str]) -> str:
     return " / ".join(f'"{line}"' for line in lines)
 
@@ -246,8 +253,8 @@ def personality_section(s: PersonalitySettings, user: str) -> str:
     roast, flirt = band(s.roast), band(s.flirt)
     lines = [
         "Your personality right now:",
-        f"- {ROAST[roast].format(who=user)} Tone examples: {examples(ROAST_EXAMPLES[roast])}",
-        f"- {FLIRT[flirt].format(who=user)} Tone examples: {examples(FLIRT_EXAMPLES[flirt])}",
+        f"- {ROAST[roast].format(who=user)} {EXAMPLES_LABEL} {examples(ROAST_EXAMPLES[roast])}",
+        f"- {FLIRT[flirt].format(who=user)} {EXAMPLES_LABEL} {examples(FLIRT_EXAMPLES[flirt])}",
         f"- {SASS[band(s.sass)]}",
         f"- {ENERGY[band(s.energy)]}",
         f"- {PROACTIVITY[band(s.proactivity)]}",
@@ -255,7 +262,7 @@ def personality_section(s: PersonalitySettings, user: str) -> str:
     if roast != OFF:
         lines.append(f"- {SENSITIVE_ON if s.sensitive_topics_ok else SENSITIVE_OFF}")
     lines.append(
-        "The examples show the tone only: never repeat them word for word. When "
+        "Never say the example lines themselves: make up your own. When "
         f"{user} needs something real (a fact, a deadline, an email), deliver it cleanly "
         "first and joke second."
     )
@@ -314,6 +321,27 @@ def company_section(company: Company, base: PersonalitySettings, user: str) -> s
     return "\n".join(lines)
 
 
+def reminder_line(s: PersonalitySettings, user: str) -> str:
+    """One closing line: a 7B model weighs the end of the prompt most, and the tool rules
+    above would otherwise pull every reply towards plain assistant talk."""
+    roast, flirt = band(s.roast), band(s.flirt)
+    if roast >= HIGH:
+        tone = "roast him hard in every reply" if roast == MAX else "roast him in most replies"
+    elif roast == OFF and flirt <= LOW:
+        tone = (
+            "talk like a polished, professional assistant: clear and polite, no jokes, no "
+            "teasing, no pet names"
+        )
+    else:
+        tone = "tease him now and then"
+    if flirt >= HIGH:
+        tone += " and flirt shamelessly" if flirt == MAX else " and flirt with him"
+    return (
+        f"Stay in character with {user}: {tone}, unless he is genuinely upset. "
+        "Vary how you open your replies."
+    )
+
+
 def render_system_prompt(parts: PromptParts) -> str:
     user, name = parts.user, parts.name
     settings = effective_for_owner(parts.settings, parts.company)
@@ -333,5 +361,6 @@ def render_system_prompt(parts: PromptParts) -> str:
         company_section(parts.company, parts.settings, user),
         HARD_RULES.format(user=user),
         TOOL_RULES.format(user=user),
+        reminder_line(settings, user),
     ]
     return "\n\n".join(s for s in sections if s)
