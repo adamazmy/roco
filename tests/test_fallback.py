@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -313,6 +314,46 @@ def test_client_total_timeout(tmp_path):
     assert read_records(tmp_path / "usage.jsonl")[0]["ok"] is False
 
 
+class StalledStream(FakeStream):
+    """Connects, then never sends a word (what a stalled connection looks like)."""
+
+    def __init__(self, release: threading.Event):
+        super().__init__([], {"input_tokens": 0, "output_tokens": 0})
+        self.release = release
+
+    @property
+    def text_stream(self):
+        self.release.wait(5)
+        return iter(())
+
+
+def test_client_gives_up_when_no_text_arrives(tmp_path):
+    release = threading.Event()
+    client = make_client(tmp_path, FakeSDK(StalledStream(release)), first_text_timeout_s=0.2)
+    t = time.monotonic()
+    try:
+        with pytest.raises(CloudUnavailableError, match="no reply within"):
+            client.stream_reply("s", [{"role": "user", "content": "x"}], lambda t: None)
+    finally:
+        release.set()
+    assert time.monotonic() - t < 2
+    rec = read_records(tmp_path / "usage.jsonl")[0]
+    assert rec["ok"] is False and "no reply" in rec["error"]
+
+
+def test_client_cancel_while_waiting(tmp_path):
+    release = threading.Event()
+    cancel = threading.Event()
+    client = make_client(tmp_path, FakeSDK(StalledStream(release)), first_text_timeout_s=5)
+    threading.Timer(0.1, cancel.set).start()
+    try:
+        reply = client.stream_reply("s", [{"role": "user", "content": "x"}], lambda t: None,
+                                    cancel=cancel)
+    finally:
+        release.set()
+    assert reply.cancelled and reply.text == ""
+
+
 def test_client_without_key_is_permanent_error(tmp_path):
     client = ClaudeClient(None, usage_log=UsageLog(tmp_path / "u.jsonl"))
     with pytest.raises(CloudPermanentError):
@@ -562,3 +603,64 @@ def test_cancel_is_thread_safe(tmp_path):
 
 def _unavailable():
     return CloudUnavailableError("connection reset")
+
+
+# =========================================================================== offline WAV
+
+
+def fake_tts(text):
+    yield b"\x01\x00" * 800, 22050
+    yield b"\x02\x00" * 800, 22050
+
+
+def test_offline_wav_render_and_lookup():
+    import wave
+
+    from roco.config import Config, deep_merge
+    from roco.fallback.chain import OFFLINE_LINE
+    from roco.fallback.offline_audio import find_offline_wav, render_offline_wav
+
+    cfg = load_config()
+    assert find_offline_wav(cfg, OFFLINE_LINE) is None
+    assert create_fallback(cfg).offline_wav is None
+
+    path = render_offline_wav(cfg, OFFLINE_LINE, tts=fake_tts)
+    with wave.open(str(path)) as wav:
+        assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 22050)
+        assert wav.getnframes() == 1600
+    assert find_offline_wav(cfg, OFFLINE_LINE) == path
+    assert create_fallback(cfg).offline_wav == path
+    # idempotent: no TTS call the second time
+    assert render_offline_wav(cfg, OFFLINE_LINE, tts=lambda t: iter(())) == path
+
+    # another voice: the old render no longer counts, and a new render replaces it
+    other = Config(deep_merge(cfg, {"voice": {"tts": {"voice": "en_GB-other"}}}))
+    assert find_offline_wav(other, OFFLINE_LINE) is None
+    new = render_offline_wav(other, OFFLINE_LINE, tts=fake_tts)
+    assert new != path and new.is_file() and not path.exists()
+
+
+def test_offline_wav_rejects_empty_or_mixed_rate_audio():
+    from roco.fallback.offline_audio import find_offline_wav, render_offline_wav
+
+    cfg = load_config()
+    with pytest.raises(ValueError, match="no audio"):
+        render_offline_wav(cfg, "hi", tts=lambda t: iter(()))
+    with pytest.raises(ValueError, match="sample rate"):
+        render_offline_wav(cfg, "hi", tts=lambda t: iter([(b"\0\0", 16000), (b"\0\0", 22050)]))
+    assert find_offline_wav(cfg, "hi") is None
+
+
+def test_fallback_prepare_reports_tts_failure(monkeypatch, capsys):
+    import roco.fallback.stt as stt_mod
+    from roco.fallback.offline_audio import prepare
+
+    monkeypatch.setattr(stt_mod, "download_stt_model", lambda cfg: True)
+
+    def broken(text):
+        raise RuntimeError("no piper voice")
+        yield  # pragma: no cover
+
+    assert prepare(load_config(), tts=broken) is False
+    assert "[FAIL] offline line" in capsys.readouterr().out
+    assert prepare(load_config(), tts=fake_tts) is True

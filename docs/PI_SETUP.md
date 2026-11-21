@@ -72,7 +72,8 @@ it would do). It installs the apt packages (PortAudio, ALSA tools, i2c-tools, SD
 enables I2C, creates `~/roco/.venv`, runs `pip install -e ".[body,pi,cloud]"`, writes
 `~/.roco/config.yaml` once (brain URL, `face.enabled: false` until the screen arrives,
 `voice.stt.model: tiny.en`), downloads the wake word, VAD, Piper voice and whisper
-`tiny.en`, and installs the **`roco-body` systemd user service** (starts at boot via
+`tiny.en`, pre-renders the "my brain's offline" line to a WAV (`roco fallback-prepare`;
+the body plays it if its own TTS ever fails), and installs the **`roco-body` systemd user service** (starts at boot via
 `loginctl enable-linger`, restarts on any failure).
 
 ### 6. Link token

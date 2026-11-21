@@ -16,6 +16,7 @@ this module costs nothing on the Pi until the fallback is actually used.
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -28,6 +29,7 @@ from roco.fallback.usage import Usage, UsageLog
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-haiku-5-5"
+_POLL_S = 0.05  # how often a waiting reply checks the cancel flag
 TextCallback = Callable[[str], None]
 
 
@@ -65,6 +67,7 @@ class ClaudeClient:
         max_tokens: int = 1024,
         connect_timeout_s: float = 3.0,
         read_timeout_s: float = 8.0,
+        first_text_timeout_s: float = 10.0,
         total_timeout_s: float = 20.0,
         max_retries: int = 1,
         usage_log: UsageLog | None = None,
@@ -77,6 +80,7 @@ class ClaudeClient:
         self.max_tokens = max_tokens
         self.connect_timeout_s = connect_timeout_s
         self.read_timeout_s = read_timeout_s
+        self.first_text_timeout_s = first_text_timeout_s
         self.total_timeout_s = total_timeout_s
         self.max_retries = max_retries
         self.usage_log = usage_log
@@ -94,6 +98,7 @@ class ClaudeClient:
             max_tokens=int(c.get("max_tokens", 1024)),
             connect_timeout_s=float(c.get("connect_timeout_s", 3.0)),
             read_timeout_s=float(c.get("read_timeout_s", 8.0)),
+            first_text_timeout_s=float(c.get("first_text_timeout_s", 10.0)),
             total_timeout_s=float(c.get("total_timeout_s", 20.0)),
             max_retries=int(c.get("max_retries", 1)),
             usage_log=UsageLog.from_config(cfg),
@@ -142,52 +147,90 @@ class ClaudeClient:
         on_text: TextCallback,
         cancel: threading.Event | None = None,
     ) -> ClaudeReply:
-        """Stream one reply, calling ``on_text`` with each text delta.
+        """Stream one reply, calling ``on_text`` with each text delta (on this thread).
 
         Returns the full text. Raises :class:`CloudPermanentError` or
         :class:`CloudUnavailableError`; every call (failed ones too) is logged.
+
+        The request runs on a worker thread and this thread waits with real deadlines:
+        no text within ``first_text_timeout_s`` (or the whole reply past
+        ``total_timeout_s``) gives up at once, even when the connection is stalled in a
+        way the HTTP read timeout never sees (keep-alive pings, a slow retry). The
+        abandoned worker finishes or times out by itself in the background.
         """
         start = self._clock()
+        wall_start = time.monotonic()
         first_text_ms: int | None = None
         parts: list[str] = []
         usage = Usage()
         stop_reason: str | None = None
         cancelled = False
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        abandon = threading.Event()
+        holder: dict[str, Any] = {}
+        params = self.request_params(system, messages)
+
+        def worker() -> None:
+            try:
+                sdk = self._sdk()
+                with sdk.messages.stream(**params) as stream:
+                    holder["stream"] = stream
+                    for text in stream.text_stream:
+                        if abandon.is_set():
+                            return
+                        if text:
+                            events.put(("text", text))
+                    if not abandon.is_set():
+                        events.put(("done", stream.get_final_message()))
+            except BaseException as exc:  # handed to the caller thread
+                events.put(("error", exc))
 
         def elapsed_ms() -> int:
             return int((self._clock() - start) * 1000)
 
+        threading.Thread(target=worker, name="roco-claude", daemon=True).start()
         try:
-            sdk = self._sdk()
-            with sdk.messages.stream(**self.request_params(system, messages)) as stream:
-                for text in stream.text_stream:
-                    if cancel is not None and cancel.is_set():
-                        cancelled = True
-                        break
-                    if not text:
-                        continue
+            while True:
+                if cancel is not None and cancel.is_set():
+                    cancelled = True
+                    abandon.set()
+                    usage = _snapshot_usage(holder.get("stream"))
+                    break
+                limit = self.first_text_timeout_s if first_text_ms is None else self.total_timeout_s
+                limit = min(limit, self.total_timeout_s)
+                remaining = wall_start + limit - time.monotonic()
+                if remaining <= 0:
                     if first_text_ms is None:
-                        first_text_ms = elapsed_ms()
-                    parts.append(text)
-                    on_text(text)
-                    if self._clock() - start > self.total_timeout_s:
-                        raise CloudUnavailableError(
-                            f"reply took longer than {self.total_timeout_s:.0f} s"
-                        )
-                if cancelled:
-                    usage = _snapshot_usage(stream)
-                else:
-                    final = stream.get_final_message()
-                    usage = Usage.from_api(getattr(final, "usage", None))
-                    stop_reason = getattr(final, "stop_reason", None)
+                        raise CloudUnavailableError(f"no reply within {limit:.0f} s")
+                    raise CloudUnavailableError(f"reply took longer than {limit:.0f} s")
+                try:
+                    kind, value = events.get(timeout=min(remaining, _POLL_S))
+                except queue.Empty:
+                    continue
+                if kind == "error":
+                    if isinstance(value, CloudError):
+                        raise value
+                    raise _classify(value) from value
+                if kind == "done":
+                    usage = Usage.from_api(getattr(value, "usage", None))
+                    stop_reason = getattr(value, "stop_reason", None)
+                    break
+                if first_text_ms is None:
+                    first_text_ms = elapsed_ms()
+                parts.append(value)
+                on_text(value)
+                if self._clock() - start > self.total_timeout_s:
+                    raise CloudUnavailableError(
+                        f"reply took longer than {self.total_timeout_s:.0f} s"
+                    )
         except CloudError as exc:
-            self._log(usage, ok=False, error=str(exc), first=first_text_ms, total=elapsed_ms())
+            abandon.set()
+            if exc.__cause__ is not None:
+                error = f"{type(exc.__cause__).__name__}: {exc.__cause__}"
+            else:
+                error = str(exc)
+            self._log(usage, ok=False, error=error, first=first_text_ms, total=elapsed_ms())
             raise
-        except Exception as exc:
-            err = _classify(exc)
-            self._log(usage, ok=False, error=f"{type(exc).__name__}: {exc}",
-                      first=first_text_ms, total=elapsed_ms())
-            raise err from exc
 
         total_ms = elapsed_ms()
         self._log(usage, ok=True, error="cancelled" if cancelled else None,

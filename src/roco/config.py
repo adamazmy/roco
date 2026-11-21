@@ -99,6 +99,7 @@ DEFAULTS: dict[str, Any] = {
         "max_tokens": 1024,  # thinking counts towards this; replies are 1-3 sentences
         "connect_timeout_s": 3.0,
         "read_timeout_s": 8.0,  # longest silence allowed while streaming
+        "first_text_timeout_s": 10.0,  # give up if no words by then
         "total_timeout_s": 20.0,  # whole reply, wall clock
         "max_retries": 1,
         "history_turns": 6,  # user+assistant pairs kept while on the fallback
