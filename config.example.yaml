@@ -16,6 +16,8 @@ llm:
   temperature: 0.6
   num_ctx: 4096
   keep_alive: 30m          # keep the model loaded between questions
+  options: {}              # extra Ollama options, e.g. { num_gpu: 99 } to force all
+                           # layers onto the GPU when `ollama ps` shows a CPU/GPU split
   timeout_s: 120
   max_tool_rounds: 5
 

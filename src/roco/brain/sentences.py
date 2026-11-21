@@ -14,6 +14,12 @@ character that does not look like the sentence continues:
 Because the decision needs the first character after the whitespace, the last
 sentence of a stream is only released by :meth:`SentenceSplitter.flush`.
 A line break also ends a sentence (models occasionally write lists anyway).
+
+Long sentences are released clause by clause: once the pending text is at least
+``clause_min_chars`` long, the first ``, `` or ``; `` after that point ends a chunk.
+A spoken list ("you have the dentist at ten, lunch with Sam at one, and...") would
+otherwise keep the voice silent until the whole list has been generated. Commas
+inside numbers ("10,000") are never followed by a space, so they never split.
 """
 
 from __future__ import annotations
@@ -33,14 +39,21 @@ ABBREVIATIONS = frozenset(
 )
 
 _TERMINAL = ".!?…"
+_CLAUSE_BREAKS = ",;"
+CLAUSE_MIN_CHARS = 60
 _CLOSERS = "\"'”’)]}»"
 # Any known emotion tag anywhere in a sentence, e.g. a model repeating "[happy]" mid-reply.
 _INLINE_TAG = re.compile(
     r"\s*\[\s*(?:" + "|".join(e.value for e in Emotion) + r")\s*\]\s*", re.IGNORECASE
 )
 # Short bracketed stage directions the model sometimes adds: "[chuckling]", "[laughs softly]".
-# Also catches a tool name the model wrote in brackets: "[get_current_time]".
-_STAGE_DIRECTION = re.compile(r"\s*\[\s*[A-Za-z][A-Za-z_ '\-]{0,30}\]\s*")
+# Also catches a tool name the model wrote in brackets ("[get_current_time]") and an
+# email id copied from a tool result ("[id o1]").
+_STAGE_DIRECTION = re.compile(r"\s*\[\s*[A-Za-z][A-Za-z0-9_ '\-]{0,30}\]\s*")
+# A list bullet the model wrote anyway: at the start, or after a colon or full stop
+# ("Here they are: - From Kiwi.com ... - From UNiDAYS ..."). A hyphen between words or
+# numbers ("ten - fifteen") is left alone.
+_BULLET = re.compile(r"(^|[:.!?]\s*)\s*(?:[-*•]|\d{1,2}[.)])\s+")
 _SPACES = re.compile(r"[ \t]+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,!?;:])")
 
@@ -53,7 +66,8 @@ def clean_sentence(text: str) -> str:
     """
     text = _INLINE_TAG.sub(" ", text)
     text = _STAGE_DIRECTION.sub(" ", text)
-    text = text.replace("*", "")
+    text = _BULLET.sub(r"\1 ", text.strip())
+    text = text.replace("*", "").replace(" | ", ", ").replace("|", " ")
     text = _SPACE_BEFORE_PUNCT.sub(r"\1", _SPACES.sub(" ", text))
     return text.strip()
 
@@ -61,8 +75,10 @@ def clean_sentence(text: str) -> str:
 class SentenceSplitter:
     """Feed chunks with :meth:`feed`; get complete sentences back. Call :meth:`flush` at the end."""
 
-    def __init__(self) -> None:
+    def __init__(self, clause_min_chars: int | None = CLAUSE_MIN_CHARS) -> None:
+        """``clause_min_chars=None`` turns clause splitting off (whole sentences only)."""
         self._buf = ""
+        self.clause_min_chars = clause_min_chars
 
     def feed(self, chunk: str) -> list[str]:
         if not chunk:
@@ -71,6 +87,8 @@ class SentenceSplitter:
         out: list[str] = []
         while True:
             cut = self._find_boundary()
+            if cut is None:
+                cut = self._find_clause()
             if cut is None:
                 break
             sentence = clean_sentence(self._buf[:cut])
@@ -86,6 +104,16 @@ class SentenceSplitter:
         return rest or None
 
     # ------------------------------------------------------------------ internals
+    def _find_clause(self) -> int | None:
+        """Index just after a clause break in a long unfinished sentence, or None."""
+        if self.clause_min_chars is None:
+            return None
+        buf = self._buf
+        for i in range(max(self.clause_min_chars - 1, 0), len(buf) - 1):
+            if buf[i] in _CLAUSE_BREAKS and buf[i + 1] in " 	":
+                return i + 1
+        return None
+
     def _find_boundary(self) -> int | None:
         """Index just after the first complete sentence in the buffer, or None."""
         buf = self._buf

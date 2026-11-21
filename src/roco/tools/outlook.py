@@ -297,4 +297,4 @@ def _received(msg: dict[str, Any], tz: tzinfo) -> str:
         dt = datetime.fromisoformat(str(msg["receivedDateTime"])).astimezone(tz)
     except (KeyError, ValueError):
         return ""
-    return f"{day_label(dt.date())} {dt:%H:%M}"
+    return day_label(dt.date())  # a clock time per email is noise when read aloud

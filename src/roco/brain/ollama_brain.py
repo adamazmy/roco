@@ -138,6 +138,7 @@ class OllamaBrain(Brain):
             temperature=llm.get("temperature"),
             num_ctx=llm.get("num_ctx"),
             keep_alive=llm.get("keep_alive"),
+            extra_options=llm.get("options") or None,
             timeout_s=float(llm.get("timeout_s", 120)),
         )
         if history is None:

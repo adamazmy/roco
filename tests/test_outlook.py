@@ -247,9 +247,9 @@ def test_unread_emails_listing_and_request():
     out = make_tools(graph).get_unread_emails("3")
     lines = out.splitlines()
     assert lines[0] == "2 email(s) (about 12 in total):"
-    assert lines[1].startswith("- [id o1] Fri 20 Nov 09:15 from Alice Smith: Lunch ? | Are we on?")
+    assert lines[1].startswith("- [id o1] Fri 20 Nov from Alice Smith: Lunch ? Preview: Are we on?")
     assert lines[1].endswith("...")
-    assert lines[2] == "- [id o2] Fri 20 Nov 09:15 from bob@y.com: (no subject)"
+    assert lines[2] == "- [id o2] Fri 20 Nov from bob@y.com: (no subject)"
     path, params, _ = graph.calls[1]
     assert path == "/me/mailFolders/inbox/messages"
     assert params["$top"] == 3
@@ -271,7 +271,7 @@ def test_search_emails():
     graph = FakeGraph({"/me/messages": {"value": [message("S1", "Bank", "b@bank.com", "Statement",
                                                           "Your statement")]}})
     out = make_tools(graph).search_emails('from:bank "statement"', 2)
-    assert out == "1 email(s):\n- [id o1] Fri 20 Nov 09:15 from Bank: Statement | Your statement"
+    assert out == "1 email(s):\n- [id o1] Fri 20 Nov from Bank: Statement Preview: Your statement"
     params = graph.calls[0][1]
     assert params["$search"] == '"from:bank statement"'
     assert params["$top"] == 2
@@ -312,7 +312,7 @@ def body_of(out):
 def test_read_email_by_alias_text_body():
     tools, graph = read_with({"contentType": "text", "content": "Hi Adam,\r\n\r\n\r\nSee you."})
     out = tools.read_email("O1")
-    assert out.startswith("From: Alice Smith <alice@x.com>\nSubject: Plans\nDate: Fri 20 Nov 09:15")
+    assert out.startswith("From: Alice Smith <alice@x.com>\nSubject: Plans\nDate: Fri 20 Nov")
     assert body_of(out) == "Hi Adam,\n\nSee you."
     path, params, headers = graph.calls[-1]
     assert path.startswith("/me/messages/AQMk") and "%2F%2B%3D" in path
@@ -526,7 +526,8 @@ def test_invisible_preview_padding_is_stripped():
     ]))
     line = make_tools(graph).get_unread_emails().splitlines()[1]
     assert line.endswith(
-        "See what\u2019s waiting for you | Open up a fresh selection from the outlet. Shop now"
+        "See what\u2019s waiting for you "
+        "Preview: Open up a fresh selection from the outlet. Shop now"
     )
     tools, _ = read_with({"contentType": "text", "content": "Hello" + padding + "\nBye"})
     assert body_of(tools.read_email("o1")) == "Hello\nBye"

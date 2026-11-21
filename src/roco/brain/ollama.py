@@ -43,6 +43,7 @@ class OllamaClient:
         temperature: float | None = 0.6,
         num_ctx: int | None = 4096,
         keep_alive: str | int | None = "30m",
+        extra_options: dict[str, Any] | None = None,
         timeout_s: float = 120.0,
         connect_timeout_s: float = 5.0,
     ) -> None:
@@ -51,6 +52,8 @@ class OllamaClient:
         self.temperature = temperature
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
+        # Any other Ollama model option (e.g. num_gpu); temperature/num_ctx above win.
+        self.extra_options = dict(extra_options or {})
         # Read timeout is per chunk: generous, because the first token waits for model load.
         timeout = httpx.Timeout(timeout_s, connect=connect_timeout_s)
         self._http = httpx.Client(base_url=self.host, timeout=timeout)
@@ -61,7 +64,7 @@ class OllamaClient:
     def build_payload(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
     ) -> dict[str, Any]:
-        options: dict[str, Any] = {}
+        options: dict[str, Any] = dict(self.extra_options)
         if self.temperature is not None:
             options["temperature"] = self.temperature
         if self.num_ctx is not None:

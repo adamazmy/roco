@@ -37,6 +37,10 @@ DEFAULTS: dict[str, Any] = {
         "temperature": 0.6,
         "num_ctx": 4096,
         "keep_alive": "30m",
+        # Extra Ollama model options sent with every request. On a GPU where the model
+        # only just fits, {"num_gpu": 99} forces every layer onto it (much faster than
+        # Ollama's cautious CPU/GPU split); leave empty if loading then fails.
+        "options": {},
         "timeout_s": 120,
         "max_tool_rounds": 5,
     },
