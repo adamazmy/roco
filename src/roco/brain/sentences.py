@@ -20,6 +20,10 @@ Long sentences are released clause by clause: once the pending text is at least
 A spoken list ("you have the dentist at ten, lunch with Sam at one, and...") would
 otherwise keep the voice silent until the whole list has been generated. Commas
 inside numbers ("10,000") are never followed by a space, so they never split.
+
+``first_clause_min_chars`` (shorter) applies to the very first chunk of a stream only:
+the first chunk is what the listener waits for, and TTS time grows with its length, so
+"Today you have a gym session," is released before "from eight to nine in the morning".
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ ABBREVIATIONS = frozenset(
 _TERMINAL = ".!?…"
 _CLAUSE_BREAKS = ",;"
 CLAUSE_MIN_CHARS = 60
+# What the brain uses for the first chunk of a reply (see the module docstring).
+FIRST_CLAUSE_MIN_CHARS = 24
 _CLOSERS = "\"'”’)]}»"
 # Any known emotion tag anywhere in a sentence, e.g. a model repeating "[happy]" mid-reply.
 _INLINE_TAG = re.compile(
@@ -75,10 +81,17 @@ def clean_sentence(text: str) -> str:
 class SentenceSplitter:
     """Feed chunks with :meth:`feed`; get complete sentences back. Call :meth:`flush` at the end."""
 
-    def __init__(self, clause_min_chars: int | None = CLAUSE_MIN_CHARS) -> None:
-        """``clause_min_chars=None`` turns clause splitting off (whole sentences only)."""
+    def __init__(
+        self,
+        clause_min_chars: int | None = CLAUSE_MIN_CHARS,
+        first_clause_min_chars: int | None = None,
+    ) -> None:
+        """``clause_min_chars=None`` turns clause splitting off (whole sentences only).
+        ``first_clause_min_chars`` overrides it for the first chunk (None = the same)."""
         self._buf = ""
         self.clause_min_chars = clause_min_chars
+        self.first_clause_min_chars = first_clause_min_chars
+        self._released = False
 
     def feed(self, chunk: str) -> list[str]:
         if not chunk:
@@ -95,6 +108,7 @@ class SentenceSplitter:
             self._buf = self._buf[cut:].lstrip()
             if sentence:
                 out.append(sentence)
+                self._released = True
         return out
 
     def flush(self) -> str | None:
@@ -106,10 +120,13 @@ class SentenceSplitter:
     # ------------------------------------------------------------------ internals
     def _find_clause(self) -> int | None:
         """Index just after a clause break in a long unfinished sentence, or None."""
-        if self.clause_min_chars is None:
+        minimum = self.clause_min_chars
+        if not self._released and self.first_clause_min_chars is not None:
+            minimum = self.first_clause_min_chars
+        if minimum is None:
             return None
         buf = self._buf
-        for i in range(max(self.clause_min_chars - 1, 0), len(buf) - 1):
+        for i in range(max(minimum - 1, 0), len(buf) - 1):
             if buf[i] in _CLAUSE_BREAKS and buf[i + 1] in " 	":
                 return i + 1
         return None

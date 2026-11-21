@@ -33,6 +33,17 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     return EXIT_OK if run_voice(cfg) == 0 else EXIT_FAIL
 
 
+def cmd_brain(args: argparse.Namespace, cfg: Config) -> int:
+    """Brain server: STT + LLM + TTS for a body client over the WebSocket link."""
+    from roco.config import deep_merge
+    from roco.server import run_server
+
+    link = {k: v for k, v in (("host", args.host), ("port", args.port)) if v is not None}
+    if link:
+        cfg = type(cfg)(deep_merge(cfg, {"link": link}))
+    return EXIT_OK if run_server(cfg) == 0 else EXIT_FAIL
+
+
 def cmd_chat(args: argparse.Namespace, cfg: Config) -> int:
     """Text mode: keyboard in, printed sentences out."""
     from roco.brain.chat import run_chat
@@ -104,6 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
         return p
 
     add("run", cmd_run, "run the full voice assistant (wake word, speech, face)")
+
+    brain = add("brain", cmd_brain, "run the brain server the body connects to (PC)")
+    brain.add_argument("--host", help="listen address (default: link.host)")
+    brain.add_argument("--port", type=int, help="listen port (default: link.port)")
 
     chat = add("chat", cmd_chat, "chat with ROCO by keyboard")
     chat.add_argument("--speak", action="store_true", help="also speak replies aloud")
