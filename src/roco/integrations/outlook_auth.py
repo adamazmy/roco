@@ -142,29 +142,49 @@ def _first_line(text: str, limit: int = 160) -> str:
 # --------------------------------------------------------------------------- roco auth outlook
 
 
-def run_device_flow(cfg: Config) -> int:
-    """``roco auth outlook``: device code sign-in, then save the token cache."""
+def run_auth(cfg: Config, *, browser: bool = False) -> int:
+    """``roco auth outlook [--browser]``: sign in, then save the token cache.
+
+    The default is the device code flow (works headless). ``browser=True`` opens the
+    browser and receives the answer on ``http://localhost``, which needs that redirect
+    URI on the app registration ("Mobile and desktop applications" platform).
+    """
     try:
         session = OutlookSession(cfg)
     except OutlookAuthError as exc:
         print(exc)
         return 1
 
-    flow = session.app.initiate_device_flow(scopes=list(SCOPES))
-    if "user_code" not in flow:
-        print("Microsoft refused to start the sign-in: "
-              + _first_line(flow.get("error_description") or flow.get("error") or str(flow)))
-        print('Check the app registration: "Allow public client flows" must be Yes and it '
-              f"must accept personal Microsoft accounts. {SETUP_HINT}")
-        return 1
-
     print("ROCO asks for read-only access to your Outlook mail (Mail.Read).")
-    print(flow["message"])  # "To sign in, use a web browser to open ... and enter the code ..."
-    print("Waiting for you to finish in the browser...")
-    result = session.app.acquire_token_by_device_flow(flow)  # blocks until done or expired
+    if browser:
+        print("Opening your browser to sign in to Microsoft...")
+        try:
+            result = session.app.acquire_token_interactive(
+                list(SCOPES), prompt="select_account", timeout=600
+            )
+        except Exception as exc:  # no browser, port in use, user closed the page...
+            print(f"Outlook sign-in failed: {_first_line(str(exc)) or exc.__class__.__name__}")
+            return 1
+    else:
+        flow = session.app.initiate_device_flow(scopes=list(SCOPES))
+        if "user_code" not in flow:
+            print("Microsoft refused to start the sign-in: "
+                  + _first_line(flow.get("error_description") or flow.get("error") or str(flow)))
+            print('Check the app registration: "Allow public client flows" must be Yes and it '
+                  f"must accept personal Microsoft accounts. {SETUP_HINT}")
+            return 1
+        print(flow["message"])  # "To sign in, use a web browser to open ... and enter the code"
+        print("Waiting for you to finish in the browser...")
+        result = session.app.acquire_token_by_device_flow(flow)  # blocks until done or expired
+
     if "access_token" not in result:
         print("Outlook sign-in failed: "
               + _first_line(result.get("error_description") or result.get("error") or "unknown"))
+        if not browser:
+            print("If Microsoft's page refused the code, try: roco auth outlook --browser")
+        elif "redirect" in str(result).lower():
+            print('Add the redirect URI http://localhost under "Mobile and desktop '
+                  f'applications" in the app registration. {SETUP_HINT}')
         return 1
     if not granted(result.get("scope")):
         print(f"Microsoft didn't grant Mail.Read (got: {result.get('scope')}). "
@@ -178,3 +198,8 @@ def run_device_flow(cfg: Config) -> int:
         print("Next: set `email: {provider: outlook}` in your config.yaml so ROCO reads it.")
     print("Check everything with: roco doctor")
     return 0
+
+
+def run_device_flow(cfg: Config) -> int:
+    """Device code sign-in (kept for callers of the original name)."""
+    return run_auth(cfg, browser=False)

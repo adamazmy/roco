@@ -162,6 +162,12 @@ ROCO never sends, deletes or changes email. Google Calendar keeps working alongs
    ROCO prints a code. Open <https://microsoft.com/devicelogin> in any browser, enter it,
    sign in with your Hotmail address and accept "Read your mail". The token is saved to
    `~/.roco/outlook_token.json`.
+
+   If Microsoft's page refuses the code (for example "The application is a first party
+   application... users are not permitted to consent"), use the browser sign-in instead:
+   in the app registration open *Authentication > Add a platform > Mobile and desktop
+   applications*, add the redirect URI `http://localhost`, save, then run
+   `roco auth outlook --browser`.
 7. **Check:** `roco doctor` should show `Outlook sign-in` as OK. Then ask `roco chat`:
    "any unread emails?".
 

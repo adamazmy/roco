@@ -52,6 +52,8 @@ class FakeMsal:
             "id_token_claims": {"preferred_username": "adam@hotmail.com"},
         }
         self.apps: list = []
+        self.interactive: dict | None = None
+        self.interactive_error: Exception | None = None
         fake = self
 
         class SerializableTokenCache:
@@ -82,6 +84,12 @@ class FakeMsal:
             def initiate_device_flow(self, scopes):
                 fake.flow_scopes = scopes
                 return fake.flow
+
+            def acquire_token_interactive(self, scopes, **kwargs):
+                fake.interactive = {"scopes": scopes, **kwargs}
+                if fake.interactive_error:
+                    raise fake.interactive_error
+                return self.acquire_token_by_device_flow(None)
 
             def acquire_token_by_device_flow(self, flow):
                 if "access_token" in fake.flow_result:
@@ -448,6 +456,38 @@ def test_auth_outlook_denied(capsys, fake_msal, tmp_path):
                              "error_description": "The user declined."}
     assert cli.main(["auth", "outlook"]) == cli.EXIT_FAIL
     assert "declined" in capsys.readouterr().out
+
+
+def test_auth_outlook_device_failure_suggests_browser(capsys, fake_msal, tmp_path):
+    write_config(tmp_path)
+    fake_msal.flow_result = {"error": "invalid_request",
+                             "error_description": "The application is a first party application"}
+    assert cli.main(["auth", "outlook"]) == cli.EXIT_FAIL
+    assert "roco auth outlook --browser" in capsys.readouterr().out
+
+
+def test_auth_outlook_browser_success(capsys, fake_msal, tmp_path, isolated_home):
+    write_config(tmp_path, provider="outlook")
+    assert cli.main(["auth", "outlook", "--browser"]) == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "Signed in as adam@hotmail.com" in out
+    assert "provider: outlook" not in out  # already configured
+    assert fake_msal.interactive["scopes"] == ["Mail.Read"]
+    assert fake_msal.interactive["prompt"] == "select_account"
+    assert (isolated_home / "outlook_token.json").exists()
+
+
+def test_auth_outlook_browser_errors(capsys, fake_msal, tmp_path, isolated_home):
+    write_config(tmp_path)
+    fake_msal.interactive_error = RuntimeError("could not open a browser")
+    assert cli.main(["auth", "outlook", "--browser"]) == cli.EXIT_FAIL
+    assert "could not open a browser" in capsys.readouterr().out
+    fake_msal.interactive_error = None
+    fake_msal.flow_result = {"error": "invalid_request",
+                             "error_description": "The redirect URI is not valid."}
+    assert cli.main(["auth", "outlook", "--browser"]) == cli.EXIT_FAIL
+    assert "http://localhost" in capsys.readouterr().out
+    assert not (isolated_home / "outlook_token.json").exists()
 
 
 def test_granted_scope_matching():
