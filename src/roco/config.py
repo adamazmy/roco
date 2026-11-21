@@ -54,6 +54,26 @@ DEFAULTS: dict[str, Any] = {
         "brain_url": "ws://127.0.0.1:8765",
         "token_file": "link_token",  # relative paths live in ~/.roco
     },
+    "server": {
+        # Brain server (roco brain / roco run). One JSON line per turn, in ~/.roco.
+        "latency_log": "latency.jsonl",
+        "tts_frame_ms": 80,  # TTS audio block size sent to the body (50-100 ms)
+        "filler": {
+            # Said at once when a slow tool is about to run and nothing was said yet.
+            "enabled": True,
+            "lines": ["Let me check.", "One moment.", "Let me have a look."],
+            # Tools fast enough to need no filler line.
+            "fast_tools": ["get_current_time", "set_reminder", "list_reminders",
+                           "cancel_reminder"],
+        },
+        # Streaming STT (roco.server.stt): decode while Adam is still talking.
+        "stt": {
+            "speculative_quiet_ms": 240,
+            "partial_min_s": 3.0,
+            "partial_every_s": 1.0,
+            "keep_tail_s": 1.0,
+        },
+    },
     "history": {
         "max_turns": 12,
         "persist": True,
