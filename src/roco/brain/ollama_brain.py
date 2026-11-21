@@ -12,6 +12,11 @@ One call to :meth:`OllamaBrain.respond`:
 5. stores the user turn and the tag-free answer in the history.
 
 Any network or model failure becomes a short British apology instead of an exception.
+
+:meth:`OllamaBrain.respond_turn` adds barge-in support: a set ``cancel`` event stops the
+stream at the next chunk (closing the HTTP stream makes Ollama stop generating), skips
+the remaining tools and sentences, and stores what was said so far, so
+:meth:`OllamaBrain.amend_last_reply` can replace it with what was actually heard.
 """
 
 from __future__ import annotations
@@ -25,12 +30,12 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from roco.brain.base import Brain, SentenceCallback
+from roco.brain.base import Brain, SentenceCallback, TurnHooks
 from roco.brain.emotion import EmotionTagParser
 from roco.brain.history import History
 from roco.brain.ollama import OllamaClient, OllamaError
 from roco.brain.persona import system_prompt
-from roco.brain.sentences import SentenceSplitter
+from roco.brain.sentences import FIRST_CLAUSE_MIN_CHARS, SentenceSplitter
 from roco.bus import Emotion, EventBus, State
 from roco.config import Config
 from roco.paths import resolve
@@ -66,13 +71,61 @@ def apology_for(error: OllamaError, model: str) -> str:
     return APOLOGY_GENERIC
 
 
+def _splitter(first: bool = True) -> SentenceSplitter:
+    """A short first chunk gets the voice going sooner (TTS time grows with length)."""
+    return SentenceSplitter(first_clause_min_chars=FIRST_CLAUSE_MIN_CHARS if first else None)
+
+
+class _Cancelled(Exception):
+    """The turn's cancel event was set (barge-in)."""
+
+
+_NO_HOOKS = TurnHooks()
+
+
+class _Turn:
+    """Per-call cancel event and hooks, passed down the tool loop."""
+
+    def __init__(self, cancel: threading.Event | None, hooks: TurnHooks | None) -> None:
+        self.cancel = cancel
+        self.hooks = hooks or _NO_HOOKS
+
+    @property
+    def cancelled(self) -> bool:
+        return self.cancel is not None and self.cancel.is_set()
+
+    def check(self) -> None:
+        if self.cancelled:
+            raise _Cancelled
+
+    def token(self) -> None:
+        if self.hooks.on_token is not None:
+            try:
+                self.hooks.on_token()
+            except Exception:
+                log.exception("on_token hook failed")
+
+    def tools(self, names: list[str]) -> None:
+        if self.hooks.on_tools is not None:
+            try:
+                self.hooks.on_tools(names)
+            except Exception:
+                log.exception("on_tools hook failed")
+
+
 class _Reply:
     """Collects one reply: publishes the emotion first, then delivers sentences."""
 
-    def __init__(self, bus: EventBus, on_sentence: SentenceCallback | None) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        on_sentence: SentenceCallback | None,
+        cancel: threading.Event | None = None,
+    ) -> None:
         self._bus = bus
         self._on_sentence = on_sentence
-        self._splitter = SentenceSplitter()
+        self._cancel = cancel
+        self._splitter = _splitter()
         self._emotion: Emotion | None = None
         self.first_emotion: Emotion | None = None
         self.sentences: list[str] = []
@@ -103,13 +156,15 @@ class _Reply:
 
     def drop_partial(self) -> None:
         """Forget an unfinished sentence (the stream broke mid-way)."""
-        self._splitter = SentenceSplitter()
+        self._splitter = _splitter(first=not self.sentences)
 
     def say(self, sentence: str) -> None:
         """Deliver a whole sentence of our own (apologies)."""
         self._deliver(sentence)
 
     def _deliver(self, sentence: str) -> None:
+        if self._cancel is not None and self._cancel.is_set():
+            return  # barge-in: nothing more is said or stored
         if self._emotion is None:
             self.set_emotion(None)
         self.sentences.append(sentence)
@@ -164,10 +219,21 @@ class OllamaBrain(Brain):
 
     # ------------------------------------------------------------------ Brain API
     def respond(self, text: str, on_sentence: SentenceCallback | None = None) -> str:
+        return self.respond_turn(text, on_sentence)
+
+    def respond_turn(
+        self,
+        text: str,
+        on_sentence: SentenceCallback | None = None,
+        *,
+        cancel: threading.Event | None = None,
+        hooks: TurnHooks | None = None,
+    ) -> str:
+        ctl = _Turn(cancel, hooks)
         with self._lock:
             turn = next(_turn_ids)
             self.bus.set_state(State.THINKING)
-            reply = _Reply(self.bus, on_sentence)
+            reply = _Reply(self.bus, on_sentence, cancel)
             text = (text or "").strip()
             if not text:
                 return ""
@@ -179,10 +245,18 @@ class OllamaBrain(Brain):
             # No current time is added here: tried after the user text, it made qwen2.5 skip
             # tools far more often (2/4 vs 4/4 scenario runs). Time comes from the tool.
             messages.append({"role": "user", "content": text})
-            prefetched = self._prefetch_time(text, turn)
-            messages.extend(prefetched)
+            base = len(messages)
+            messages.extend(self._prefetch_time(text, turn))
             try:
-                trace = prefetched + self._converse(messages, reply, turn)
+                ctl.check()
+                trace = self._converse(messages, reply, turn, ctl, trace_from=base)
+            except _Cancelled:
+                # Keep what was said and the tool calls already made; the server then
+                # replaces the reply with what was heard (amend_last_reply).
+                log.info("[turn %d] cancelled after %d sentence(s)", turn, len(reply.sentences))
+                emotion = reply.first_emotion.value if reply.first_emotion else None
+                self.history.add_turn(text, reply.text, emotion, messages[base:], at=started)
+                return reply.text
             except OllamaError as exc:
                 log.warning("[turn %d] Ollama failed (%s): %s", turn, exc.kind, exc)
                 return self._apologise(reply, apology_for(exc, self.model))
@@ -196,6 +270,10 @@ class OllamaBrain(Brain):
             emotion = reply.first_emotion.value if reply.first_emotion else None
             self.history.add_turn(text, reply.text, emotion, trace, at=started)
             return reply.text
+
+    def amend_last_reply(self, heard: str) -> None:
+        with self._lock:
+            self.history.amend_last_reply((heard or "").strip())
 
     def reset(self) -> None:
         with self._lock:
@@ -242,17 +320,24 @@ class OllamaBrain(Brain):
         return reply.text
 
     def _converse(
-        self, messages: list[dict[str, Any]], reply: _Reply, turn: int
+        self,
+        messages: list[dict[str, Any]],
+        reply: _Reply,
+        turn: int,
+        ctl: _Turn | None = None,
+        trace_from: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Run the tool loop. Returns this turn's tool-call and tool-result messages."""
-        start = len(messages)
+        """Run the tool loop. Returns this turn's tool-call and tool-result messages
+        (from ``trace_from``, default: what this call adds)."""
+        ctl = ctl or _Turn(None, None)
+        start = len(messages) if trace_from is None else trace_from
         schemas = self.registry.schemas() or None
         retried = False
         round_no = 0
         while round_no <= self.max_tool_rounds:
             # The last round goes without tools so the model has to answer in words.
             tools = schemas if round_no < self.max_tool_rounds else None
-            content, tool_calls = self._stream_round(messages, tools, reply)
+            content, tool_calls = self._stream_round(messages, tools, reply, ctl)
             if not tool_calls and not reply.sentences and not retried:
                 # qwen2.5 occasionally ends a turn with no text and no tool call (or a bare
                 # tag); one retry nearly always gets a real answer.
@@ -272,19 +357,32 @@ class OllamaBrain(Brain):
                     "tool_calls": [_sanitize_call(c) for c in tool_calls],
                 }
             )
+            ctl.tools([_call_parts(c)[0] or "" for c in tool_calls])
             for call in tool_calls:
                 name, arguments = _call_parts(call)
+                if ctl.cancelled:
+                    # Every call needs a result, or the replayed history confuses the model.
+                    messages.append(
+                        {"role": "tool", "content": "Cancelled: not run.", "tool_name": name or ""}
+                    )
+                    continue
                 if name is None:
                     result = "Error: malformed tool call (no function name)."
                 else:
                     result = self.registry.call(name, arguments)
                 log.debug("[turn %d] tool %s(%s) -> %.200s", turn, name, _short(arguments), result)
                 messages.append({"role": "tool", "content": result, "tool_name": name or ""})
+            ctl.check()
         return messages[start:]
 
     def _stream_round(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, reply: _Reply
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        reply: _Reply,
+        ctl: _Turn | None = None,
     ) -> tuple[str, list[Any]]:
+        ctl = ctl or _Turn(None, None)
         parser = EmotionTagParser()
         raw: list[str] = []
         tool_calls: list[Any] = []
@@ -304,18 +402,30 @@ class OllamaBrain(Brain):
                 text = text[:cut]
             reply.feed(text)
 
-        for chunk in self.client.stream_chat(messages, tools):
-            message = chunk.get("message") or {}
-            piece = message.get("content") or ""
-            if piece:
-                raw.append(piece)
-                was_decided = parser.decided
-                out = parser.feed(piece)
-                if out or (parser.decided and not was_decided):
-                    push(out)
-            calls = message.get("tool_calls")
-            if isinstance(calls, list):
-                tool_calls.extend(calls)
+        stream = self.client.stream_chat(messages, tools)
+        try:
+            for chunk in stream:
+                if ctl.cancelled:
+                    break
+                message = chunk.get("message") or {}
+                piece = message.get("content") or ""
+                if piece:
+                    ctl.token()
+                    raw.append(piece)
+                    was_decided = parser.decided
+                    out = parser.feed(piece)
+                    if out or (parser.decided and not was_decided):
+                        push(out)
+                calls = message.get("tool_calls")
+                if isinstance(calls, list):
+                    tool_calls.extend(calls)
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()  # closes the HTTP response early: Ollama stops generating
+        if ctl.cancelled:
+            reply.drop_partial()
+            raise _Cancelled
         if not parser.decided:
             push(parser.flush())
         if held:

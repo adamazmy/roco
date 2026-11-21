@@ -176,6 +176,20 @@ class History:
             snapshot = list(self._messages)
         self._save(snapshot)
 
+    def amend_last_reply(self, assistant: str) -> bool:
+        """Replace the text of the newest assistant reply (keeps its emotion and tools).
+
+        Used after a barge-in, so the history holds what was heard rather than what
+        was generated. Returns False when there is no reply to amend.
+        """
+        with self._lock:
+            if not self._messages or self._messages[-1]["role"] != "assistant":
+                return False
+            self._messages[-1] = {**self._messages[-1], "content": assistant}
+            snapshot = list(self._messages)
+        self._save(snapshot)
+        return True
+
     def clear(self) -> None:
         with self._lock:
             self._messages = []

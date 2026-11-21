@@ -67,3 +67,11 @@ def test_hyphens_between_words_and_numbers_stay():
     assert clean_sentence(walk) == walk
     cold = "It's minus 5, or -5 degrees."
     assert clean_sentence(cold) == cold
+
+
+def test_first_chunk_may_be_a_short_clause():
+    splitter = SentenceSplitter(first_clause_min_chars=20)
+    out = splitter.feed("Today you have a gym session, from eight to nine, and then lunch")
+    assert out == ["Today you have a gym session,"]  # later clauses wait for 60 chars
+    assert splitter.feed(" with Sam at one") == []  # under 60 chars: no early clause now
+    assert splitter.flush() == "from eight to nine, and then lunch with Sam at one"
