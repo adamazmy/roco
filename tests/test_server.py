@@ -410,6 +410,8 @@ class FakePersonality:
         self.callbacks = []
 
     def apply_settings(self, values):
+        if values["personality"].get("roast", 0) > 100:
+            raise ValueError("roast must be 0-100")
         self.values = {"personality": {**self.values["personality"], **values["personality"]}}
         return self.values
 
@@ -435,6 +437,9 @@ def test_personality_settings_go_to_the_brain(isolated_home, body_factory, bus):
     body.send(Settings(values={"personality": {"roast": 80}, "muted": True}))
     reply = body.conn.recv(timeout=5)
     assert reply.values == {"personality": {"roast": 80, "preset": "default"}, "muted": True}
+    body.send(Settings(values={"personality": {"roast": 500}}))
+    error = body.conn.recv(timeout=5)
+    assert isinstance(error, Error) and error.code == "bad_message" and not error.fatal
     brain.personality.voice_command(preset="unhinged")  # "ROCO, go unhinged"
     pushed = body.conn.recv(timeout=5)
     assert pushed.values["personality"]["preset"] == "unhinged"

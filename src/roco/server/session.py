@@ -245,7 +245,12 @@ class Session:
         elif isinstance(frame, Pong):
             pass
         elif isinstance(frame, Settings):
-            self._send(Settings(values=self.ctx.apply_settings(frame.values)))
+            try:
+                snapshot = self.ctx.apply_settings(frame.values)
+            except ValueError as exc:
+                self._send(Error(code="bad_message", message=f"bad settings: {exc}"))
+                return
+            self._send(Settings(values=snapshot))
         elif isinstance(frame, Unknown):
             log.debug("Skipping unknown message type %r", frame.type)
         else:

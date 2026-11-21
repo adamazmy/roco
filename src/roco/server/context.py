@@ -84,12 +84,15 @@ class BrainContext:
 
         The ``personality`` part goes to ``brain.personality.apply_settings`` when the
         brain has one (workstream C owns those settings); the rest is deep-merged here.
+        Raises ValueError for a value the personality refuses (nothing is applied then).
         """
         values = dict(values or {})
         personality = self.personality
         if personality is not None and "personality" in values:
             try:
                 personality.apply_settings({"personality": values.pop("personality")})
+            except ValueError:
+                raise
             except Exception:
                 log.exception("personality.apply_settings failed")
         with self._settings_lock:
