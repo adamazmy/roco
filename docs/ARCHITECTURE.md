@@ -74,3 +74,35 @@ credentials/token and models. None of it is committed.
 Each workstream edits only its own `cmd_*` function in `cli.py` (importing its implementation
 lazily inside the function) and adds dependencies only to its own extra in `pyproject.toml`.
 Changing a `base.py` interface needs a separate small PR so the others can rebase.
+
+## Phase 3: brain server + body client
+
+The product spec is [`docs/ROCO_SPEC.md`](ROCO_SPEC.md) (§9 architecture, §11 targets).
+Heavy work runs on the PC; the Pi 5 (2 GB) is the body only.
+
+```
+ Pi / PC: roco body                                   PC: roco brain
+ ┌──────────────────────────────┐   WebSocket    ┌──────────────────────────────────┐
+ │ mic → AEC → wake word → VAD  │ ── audio up ──▶ │ streaming STT (faster-whisper)    │
+ │ playback (stops on barge-in) │ ◀─ TTS audio ── │ Brain (Ollama + tools + persona)  │
+ │ face, servos (from messages) │ ◀─ text/state ─ │ sentence TTS · filler lines       │
+ │ fallback: Claude + tiny.en   │ ── control ───▶ │ per-turn latency log              │
+ └──────────────────────────────┘                └──────────────────────────────────┘
+```
+
+`roco run` runs both halves in one process, joined by `memory_pipe()`. Protocol:
+[`docs/PROTOCOL.md`](PROTOCOL.md).
+
+| Package | Owner (Phase 3) | Contents |
+|---|---|---|
+| `roco.protocol` | planning commit | Messages, audio frames, transports, link token |
+| `roco.server` | A | WebSocket server, sessions, streaming STT → brain → TTS, interrupts, latency log, `roco brain` |
+| `roco.client` | B | Connection + reconnect, mic upload, wake word, VAD, playback, barge-in, face/servos, `roco body`, `roco run` |
+| `roco.voice.aec` | B | Software echo cancellation |
+| `roco.personality` | C | Settings, presets, prompt rendering, voice commands, per-person overrides |
+| `roco.voice` TTS backends | C | Tuned Piper + post-processing, Kokoro |
+| `roco.fallback` | D | Brain chain (PC → Claude → canned), Claude client, cost log, local tiny.en STT |
+
+The brain stays the `Brain` interface (`respond(text, on_sentence)`); the server wraps it.
+The body client decides the end of speech, cuts playback on barge-in locally, then tells the
+brain. When the brain link is down, the body asks the fallback chain instead.
