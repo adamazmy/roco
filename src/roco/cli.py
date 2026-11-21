@@ -28,12 +28,16 @@ def _not_implemented(feature: str, workstream: str) -> int:
 
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     """Full voice loop: wake word -> STT -> brain -> TTS, with face and servos."""
-    return _not_implemented("roco run", "B")
+    from roco.voice.app import run_voice
+
+    return EXIT_OK if run_voice(cfg) == 0 else EXIT_FAIL
 
 
 def cmd_chat(args: argparse.Namespace, cfg: Config) -> int:
     """Text mode: keyboard in, printed sentences out."""
-    return _not_implemented("roco chat", "A")
+    from roco.brain.chat import run_chat
+
+    return run_chat(args, cfg)
 
 
 def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
@@ -43,21 +47,43 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_auth_usage(args: argparse.Namespace, cfg: Config) -> int:
-    print("usage: roco auth google", file=sys.stderr)
+    print("usage: roco auth {google,outlook}", file=sys.stderr)
     return EXIT_FAIL
 
 
 def cmd_auth_google(args: argparse.Namespace, cfg: Config) -> int:
-    return _not_implemented("roco auth google", "D")
+    """Browser sign-in for Google Calendar + Gmail (read-only); saves the token in ~/.roco."""
+    from roco.integrations.google_auth import run_auth_flow
+
+    return EXIT_OK if run_auth_flow(cfg) == 0 else EXIT_FAIL
+
+
+def cmd_auth_outlook(args: argparse.Namespace, cfg: Config) -> int:
+    """Device-code sign-in for Outlook.com / Hotmail mail (read-only)."""
+    from roco.integrations.outlook_auth import run_auth
+
+    return EXIT_OK if run_auth(cfg, browser=getattr(args, "browser", False)) == 0 else EXIT_FAIL
 
 
 def cmd_download_models(args: argparse.Namespace, cfg: Config) -> int:
-    return _not_implemented("roco download-models", "B")
+    """Download the wake-word models, the Piper voice and the whisper model (idempotent)."""
+    from roco.voice.models import main_download
+
+    return EXIT_OK if main_download(cfg, force=args.force) else EXIT_FAIL
 
 
 def cmd_demo_face(args: argparse.Namespace, cfg: Config) -> int:
     """Cycle through every emotion and state on the face."""
-    return _not_implemented("roco demo-face", "C")
+    try:
+        import pygame  # noqa: F401
+    except ImportError:
+        print('demo-face needs pygame: pip install -e ".[face]"', file=sys.stderr)
+        return EXIT_FAIL
+    from roco.body.demo import run_demo
+
+    print("Space = pause, Left/Right = step, Esc = quit.")
+    run_demo(cfg)
+    return EXIT_OK
 
 
 # --------------------------------------------------------------------------- parser
@@ -90,6 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub = auth.add_subparsers(dest="provider", metavar="<provider>")
     google = auth_sub.add_parser("google", help="connect Google Calendar and Gmail (read-only)")
     google.set_defaults(func=cmd_auth_google)
+    outlook = auth_sub.add_parser("outlook", help="connect Outlook.com / Hotmail mail (read-only)")
+    outlook.set_defaults(func=cmd_auth_outlook)
+    outlook.add_argument(
+        "--browser", action="store_true",
+        help="sign in through the browser instead of a device code",
+    )
 
     dl = add("download-models", cmd_download_models, "download wake-word and voice models")
     dl.add_argument("--force", action="store_true", help="re-download even if present")

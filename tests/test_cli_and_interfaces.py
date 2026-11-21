@@ -27,14 +27,19 @@ def test_no_command_prints_help(capsys):
     assert "usage" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    "argv", [["run"], ["chat"], ["auth", "google"], ["download-models"], ["demo-face"]]
-)
-def test_stubs_exit_cleanly(argv):
-    # Stubs return EXIT_NOT_IMPLEMENTED until their workstream lands; afterwards
-    # these commands need real hardware/services and get their own tests.
-    code = cli.main(argv)
-    assert code in (cli.EXIT_OK, cli.EXIT_FAIL, cli.EXIT_NOT_IMPLEMENTED)
+def test_no_command_is_left_as_a_stub():
+    # Every command is implemented by now; each workstream tests its own command
+    # (they need a microphone, a window, Ollama or a browser sign-in to run for real).
+    import inspect
+
+    for name, func in vars(cli).items():
+        if name.startswith("cmd_") and callable(func):
+            assert "_not_implemented(" not in inspect.getsource(func), name
+
+
+def test_auth_without_provider_prints_usage(capsys):
+    assert cli.main(["auth"]) == cli.EXIT_FAIL
+    assert "usage: roco auth" in capsys.readouterr().err
 
 
 def test_doctor_reports_unreachable_ollama(monkeypatch, capsys):
