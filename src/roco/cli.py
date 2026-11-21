@@ -79,6 +79,13 @@ def cmd_cloud_usage(args: argparse.Namespace, cfg: Config) -> int:
     return run_cloud_usage(cfg, by=args.by)
 
 
+def cmd_fallback_prepare(args: argparse.Namespace, cfg: Config) -> int:
+    """Fetch the fallback's tiny.en model and pre-render the offline line (Pi setup)."""
+    from roco.fallback.offline_audio import prepare
+
+    return 0 if prepare(cfg) else 1
+
+
 def cmd_cloud_key(args: argparse.Namespace, cfg: Config) -> int:
     """Store the Anthropic API key for the fallback brain in ~/.roco."""
     from roco.fallback.cli import run_cloud_key
@@ -145,6 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
     key = add("cloud-key", cmd_cloud_key, "store the Anthropic API key in ~/.roco (hidden prompt)")
     key.add_argument("--stdin", action="store_true", help="read the key from stdin")
     key.add_argument("--show", action="store_true", help="show which key is in use (masked)")
+    add("fallback-prepare", cmd_fallback_prepare,
+        "fetch the fallback STT model and pre-render the offline line (Pi setup)")
 
     add("demo-face", cmd_demo_face, "cycle the face through every emotion")
     return parser

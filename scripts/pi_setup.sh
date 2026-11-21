@@ -174,13 +174,13 @@ done
 
 # ------------------------------------------------------------------------ models
 if [[ $DO_MODELS -eq 1 ]]; then
-  step "Models (wake word, VAD, Piper voice, whisper tiny.en)"
+  step "Models (wake word, VAD, Piper voice, whisper tiny.en, offline line)"
   # Wake word + Piper voice (the body's own voice for fallback replies) + VAD + the
   # whisper model named in voice.stt.model (tiny.en above). Idempotent.
   run "$ROCO" download-models
-  # The fallback's STT model (cloud.stt_model), in case voice.stt.model differs.
-  run "$VENV/bin/python" -c \
-    "from roco.config import load_config; from roco.fallback.stt import download_stt_model as d; raise SystemExit(0 if d(load_config()) else 1)"
+  # The fallback's STT model (cloud.stt_model, in case voice.stt.model differs) and the
+  # "my brain's offline" line pre-rendered in the body's voice (played if TTS fails).
+  run "$ROCO" fallback-prepare
 fi
 
 # ------------------------------------------------------------------------ service

@@ -603,3 +603,64 @@ def test_cancel_is_thread_safe(tmp_path):
 
 def _unavailable():
     return CloudUnavailableError("connection reset")
+
+
+# =========================================================================== offline WAV
+
+
+def fake_tts(text):
+    yield b"\x01\x00" * 800, 22050
+    yield b"\x02\x00" * 800, 22050
+
+
+def test_offline_wav_render_and_lookup():
+    import wave
+
+    from roco.config import Config, deep_merge
+    from roco.fallback.chain import OFFLINE_LINE
+    from roco.fallback.offline_audio import find_offline_wav, render_offline_wav
+
+    cfg = load_config()
+    assert find_offline_wav(cfg, OFFLINE_LINE) is None
+    assert create_fallback(cfg).offline_wav is None
+
+    path = render_offline_wav(cfg, OFFLINE_LINE, tts=fake_tts)
+    with wave.open(str(path)) as wav:
+        assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 22050)
+        assert wav.getnframes() == 1600
+    assert find_offline_wav(cfg, OFFLINE_LINE) == path
+    assert create_fallback(cfg).offline_wav == path
+    # idempotent: no TTS call the second time
+    assert render_offline_wav(cfg, OFFLINE_LINE, tts=lambda t: iter(())) == path
+
+    # another voice: the old render no longer counts, and a new render replaces it
+    other = Config(deep_merge(cfg, {"voice": {"tts": {"voice": "en_GB-other"}}}))
+    assert find_offline_wav(other, OFFLINE_LINE) is None
+    new = render_offline_wav(other, OFFLINE_LINE, tts=fake_tts)
+    assert new != path and new.is_file() and not path.exists()
+
+
+def test_offline_wav_rejects_empty_or_mixed_rate_audio():
+    from roco.fallback.offline_audio import find_offline_wav, render_offline_wav
+
+    cfg = load_config()
+    with pytest.raises(ValueError, match="no audio"):
+        render_offline_wav(cfg, "hi", tts=lambda t: iter(()))
+    with pytest.raises(ValueError, match="sample rate"):
+        render_offline_wav(cfg, "hi", tts=lambda t: iter([(b"\0\0", 16000), (b"\0\0", 22050)]))
+    assert find_offline_wav(cfg, "hi") is None
+
+
+def test_fallback_prepare_reports_tts_failure(monkeypatch, capsys):
+    import roco.fallback.stt as stt_mod
+    from roco.fallback.offline_audio import prepare
+
+    monkeypatch.setattr(stt_mod, "download_stt_model", lambda cfg: True)
+
+    def broken(text):
+        raise RuntimeError("no piper voice")
+        yield  # pragma: no cover
+
+    assert prepare(load_config(), tts=broken) is False
+    assert "[FAIL] offline line" in capsys.readouterr().out
+    assert prepare(load_config(), tts=fake_tts) is True

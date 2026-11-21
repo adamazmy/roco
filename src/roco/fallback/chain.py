@@ -7,6 +7,7 @@ link; this object is everything after it. Contract agreed with workstream B:
     fb = create_fallback(cfg)                     # light, never raises
     fb.name                                       # "claude:<model>" or "canned"
     fb.offline_line                               # spoken by the body's local TTS
+    fb.offline_wav                                # same line pre-rendered (Path or None)
     fb.respond_audio(pcm, rate, on_sentence) -> str
     fb.respond_text(text, on_sentence) -> str
     fb.cancel()                                   # barge-in; safe from another thread
@@ -25,6 +26,7 @@ import logging
 import threading
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from roco.brain.emotion import EmotionTagParser
@@ -66,6 +68,7 @@ class FallbackChain:
         history_turns: int = 6,
         now: Callable[[], datetime] | None = None,
         describe_now: Callable[[datetime], str] | None = None,
+        offline_wav: Path | None = None,
     ) -> None:
         self._claude = claude
         self._stt = stt or LazyStt()
@@ -80,6 +83,9 @@ class FallbackChain:
         self._spoke = False  # the fallback answered something since the last restore
         self._claude_ok = claude is not None
         self.offline_line = OFFLINE_LINE
+        # Pre-rendered WAV of offline_line in the body's voice (roco fallback-prepare), for
+        # the body to play when its own TTS fails; None if not rendered for this voice.
+        self.offline_wav = offline_wav
         self.last_emotion: Emotion | None = None
 
     # ------------------------------------------------------------------ state
@@ -223,6 +229,7 @@ def create_fallback(cfg: Config, *, client: Any = None) -> FallbackChain:
 
     ``client`` injects a stand-in for ``anthropic.Anthropic`` (tests).
     """
+    from roco.fallback.offline_audio import find_offline_wav
     from roco.tools.clock import describe_now, local_timezone
 
     tz = local_timezone(cfg)
@@ -241,4 +248,5 @@ def create_fallback(cfg: Config, *, client: Any = None) -> FallbackChain:
         history_turns=int(cfg.get_path("cloud.history_turns", 6)),
         now=lambda: datetime.now(tz),
         describe_now=describe_now,
+        offline_wav=find_offline_wav(cfg, OFFLINE_LINE),
     )
