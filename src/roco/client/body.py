@@ -200,6 +200,7 @@ class BodyClient:
         self._fallback: Any = None
         self._fallback_lock = threading.Lock()
         self._local_tts: TTS | None = None
+        self._offline_wav_played: set[int] = set()
         self._fallback_spoke = False
         self.stats: dict[str, Any] = {"late_dropped": 0, "barge_ins": [], "turns": []}
         self.last_metrics: dict[int, dict[str, int]] = {}
@@ -761,20 +762,53 @@ class BodyClient:
             self.player.finish(turn)
 
     def _speak_into(self, turn: int, index: int, text: str) -> None:
+        """Speak ``text`` with the local TTS as sentence ``index`` of ``turn``. If the TTS
+        cannot load or fails, play the fallback's pre-rendered offline line instead (once
+        per turn), so ROCO is never silent while the brain is down."""
         tts = self._get_tts()
         log.info("ROCO (local): %s", text)
-        if tts is None:
-            return
         self.player.set_text(turn, index, text)
         pending: tuple[bytes, int] | None = None
-        for chunk in tts(text):
-            if self.player.is_cancelled(turn):
+        try:
+            if tts is None:
+                raise RuntimeError("no local TTS")
+            for chunk in tts(text):
+                if self.player.is_cancelled(turn):
+                    return
+                if pending is not None:
+                    self.player.feed(turn, index, pending[0], pending[1], end=False)
+                pending = chunk
+        except Exception as exc:
+            if pending is None:  # nothing of this sentence was queued yet
+                log.warning("Local TTS failed (%s); playing the recorded offline line", exc)
+                self._play_offline_wav(turn, index)
                 return
-            if pending is not None:
-                self.player.feed(turn, index, pending[0], pending[1], end=False)
-            pending = chunk
+            log.exception("Local TTS failed mid-sentence")
         if pending is not None:
             self.player.feed(turn, index, pending[0], pending[1], end=True)
+
+    def _play_offline_wav(self, turn: int, index: int) -> bool:
+        """``fb.offline_wav`` (workstream D): the offline line pre-rendered at setup."""
+        if turn in self._offline_wav_played:
+            return False
+        path = getattr(self._fallback, "offline_wav", None)
+        if not path:
+            return False
+        try:
+            import wave
+
+            with wave.open(str(path), "rb") as w:
+                if w.getnchannels() != 1 or w.getsampwidth() != 2:
+                    raise ValueError("offline WAV must be mono 16-bit")
+                rate, pcm = w.getframerate(), w.readframes(w.getnframes())
+        except (OSError, EOFError, ValueError) as exc:
+            log.error("Cannot play the offline line %s: %s", path, exc)
+            return False
+        self._offline_wav_played.add(turn)
+        line = getattr(self._fallback, "offline_line", "")
+        if line:
+            self.player.set_text(turn, index, line)
+        return self.player.feed(turn, index, pcm, rate, end=True)
 
     def _speak_local(self, text: str) -> None:
         with self._lock:

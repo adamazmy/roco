@@ -431,3 +431,51 @@ def array_level(pcm: bytes) -> int:
     from array import array
 
     return array("h", pcm)[1]
+
+
+def _write_wav(path, rate=22050, n=2205):
+    import wave
+
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes([5, 0]) * n)
+    return path
+
+
+@pytest.mark.parametrize("tts_factory", ["missing", "broken"])
+def test_offline_wav_plays_when_the_local_tts_cannot_speak(tmp_path, tts_factory):
+    fb = FakeFallback()
+    fb.offline_wav = _write_wav(tmp_path / "offline.wav", rate=16000)
+
+    def broken(text):
+        raise RuntimeError("piper crashed")
+        yield  # pragma: no cover
+
+    tts = None if tts_factory == "missing" else (lambda: broken)
+    r = Rig(connect=False, fallback=lambda: fb, tts=tts)
+    try:
+        r.user_turn()
+        assert wait_for(lambda: r.player.playing)
+        assert wait_for(lambda: r.body._reply is None or r.body._reply.done)
+        r.play(0.5)
+        assert r.body._offline_wav_played == {1}  # once, not once per sentence
+        assert r.body.mode is Mode.FOLLOWUP
+    finally:
+        r.close()
+
+
+def test_no_offline_wav_keeps_the_old_silent_behaviour():
+    fb = FakeFallback()
+    fb.offline_wav = None
+    r = Rig(connect=False, fallback=lambda: fb, tts=None)
+    try:
+        r.user_turn()
+        assert wait_for(lambda: r.body.mode is Mode.FOLLOWUP or
+                        (r.body._reply is not None and r.body._reply.done))
+        r.player.dispatch_pending()
+        assert not r.player.playing
+        assert r.body._offline_wav_played == set()
+    finally:
+        r.close()
