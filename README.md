@@ -15,12 +15,13 @@ All the AI runs on your own machine:
 | Face | PC window now, Pi display later | pygame |
 | Head | simulated now, PCA9685 later | 2 servos, pan/tilt |
 
-Calendar and email use the Google APIs (read-only for email), so that data is cloud by
-nature; "local" means that all the AI processing stays on your machine.
+Calendar uses the Google Calendar API, and email is read-only through Gmail or
+Outlook.com/Hotmail, so that data is cloud by nature; "local" means that all the AI
+processing stays on your machine.
 
-> **Status:** Phase 0 scaffold. Package layout, config, event bus, tool registry, CLI
-> and interfaces are in place; the brain, voice, face and Google integration land in
-> follow-up PRs. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> **Status:** v0.1 runs on a Windows PC: voice, face, simulated head, reminders,
+> calendar and read-only email. The robot body (Raspberry Pi 5, display, servos) comes
+> next: see [docs/HARDWARE.md](docs/HARDWARE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Quickstart (Windows)
 
@@ -65,9 +66,12 @@ Global options: `-c/--config PATH`, `-v/--verbose`.
 
 ## Configuration
 
-Copy [`config.example.yaml`](config.example.yaml) to `config.yaml` (in the folder you run
-`roco` from) or to `~/.roco/config.yaml`, and keep only the keys you change: it is
+Copy [`config.example.yaml`](config.example.yaml) to `~/.roco/config.yaml` (or to
+`config.yaml` in the folder you run `roco` from) and keep only the keys you change: it is
 deep-merged over the defaults in [`src/roco/config.py`](src/roco/config.py).
+Only ONE file is used, the first found in this order: `--config`, `ROCO_CONFIG`,
+`./config.yaml`, `~/.roco/config.yaml`. A stray `./config.yaml` therefore hides your
+settings in `~/.roco`.
 `ROCO_CONFIG` points at a specific file; `ROCO_HOME` moves the state directory.
 
 ROCO's state (conversation history, reminders, Google token, models) lives in
