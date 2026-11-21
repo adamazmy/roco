@@ -26,6 +26,7 @@ TOOL_MODULES: tuple[str, ...] = (
     "roco.tools.clock",  # workstream A
     "roco.tools.reminders",  # workstream A
     "roco.tools.google",  # workstream D
+    "roco.tools.outlook",  # workstream D (email only, when email.provider is outlook)
 )
 
 

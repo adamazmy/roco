@@ -45,12 +45,22 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_auth_usage(args: argparse.Namespace, cfg: Config) -> int:
-    print("usage: roco auth google", file=sys.stderr)
+    print("usage: roco auth {google,outlook}", file=sys.stderr)
     return EXIT_FAIL
 
 
 def cmd_auth_google(args: argparse.Namespace, cfg: Config) -> int:
-    return _not_implemented("roco auth google", "D")
+    """Browser sign-in for Google Calendar + Gmail (read-only); saves the token in ~/.roco."""
+    from roco.integrations.google_auth import run_auth_flow
+
+    return EXIT_OK if run_auth_flow(cfg) == 0 else EXIT_FAIL
+
+
+def cmd_auth_outlook(args: argparse.Namespace, cfg: Config) -> int:
+    """Device-code sign-in for Outlook.com / Hotmail mail (read-only)."""
+    from roco.integrations.outlook_auth import run_device_flow
+
+    return EXIT_OK if run_device_flow(cfg) == 0 else EXIT_FAIL
 
 
 def cmd_download_models(args: argparse.Namespace, cfg: Config) -> int:
@@ -101,6 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub = auth.add_subparsers(dest="provider", metavar="<provider>")
     google = auth_sub.add_parser("google", help="connect Google Calendar and Gmail (read-only)")
     google.set_defaults(func=cmd_auth_google)
+    outlook = auth_sub.add_parser("outlook", help="connect Outlook.com / Hotmail mail (read-only)")
+    outlook.set_defaults(func=cmd_auth_outlook)
 
     dl = add("download-models", cmd_download_models, "download wake-word and voice models")
     dl.add_argument("--force", action="store_true", help="re-download even if present")
