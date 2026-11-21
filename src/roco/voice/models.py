@@ -5,6 +5,7 @@ Layout under ``roco.paths.models_dir()`` (``~/.roco/models``)::
     openwakeword/   melspectrogram.onnx, embedding_model.onnx, hey_jarvis_v0.1.onnx, ...
     piper/          en_GB-cori-high.onnx, en_GB-cori-high.onnx.json
     whisper/        faster-whisper's Hugging Face cache (base.en)
+    silero/         silero_vad.onnx (v5, the body's voice activity detector)
 
 Only ``httpx`` (a core dependency) is imported at module level; openwakeword and
 faster-whisper are imported inside the download steps.
@@ -32,6 +33,10 @@ log = logging.getLogger(__name__)
 PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 OWW_FEATURE_FILES = ("melspectrogram.onnx", "embedding_model.onnx")
 OWW_DEFAULT_VERSION = "v0.1"
+# Silero VAD v5 (MIT). Pinned to a release tag so the file never changes under us.
+SILERO_VAD_URL = (
+    "https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx"
+)
 
 Printer = Callable[[str], None]
 
@@ -49,6 +54,14 @@ def piper_dir() -> Path:
 
 def whisper_dir() -> Path:
     return models_dir() / "whisper"
+
+
+def silero_vad_path() -> Path:
+    """The body's VAD model. Falls back to the (older, v4) copy openWakeWord ships."""
+    path = models_dir() / "silero" / "silero_vad.onnx"
+    if not path.is_file() and (oww_dir() / "silero_vad.onnx").is_file():
+        return oww_dir() / "silero_vad.onnx"
+    return path
 
 
 def _looks_like_path(value: str) -> bool:
@@ -250,6 +263,24 @@ def download_whisper(cfg: Config, force: bool = False, printer: Printer = print)
     return DownloadResult(name, "downloaded", str(cache))
 
 
+def download_silero_vad(
+    cfg: Config,
+    force: bool = False,
+    printer: Printer = print,
+    client: httpx.Client | None = None,
+) -> DownloadResult:
+    name = "Silero VAD"
+    dest = models_dir() / "silero" / "silero_vad.onnx"
+    if not force and _valid_file(dest):
+        return DownloadResult(name, "present", str(dest.parent))
+    printer(f"  Downloading Silero VAD into {dest.parent} ...")
+    try:
+        download_file(SILERO_VAD_URL, dest, printer, client)
+    except httpx.HTTPError as exc:
+        return DownloadResult(name, "failed", f"{exc.__class__.__name__}: {exc}")
+    return DownloadResult(name, "downloaded", str(dest.parent))
+
+
 def download_all(
     cfg: Config,
     force: bool = False,
@@ -257,7 +288,8 @@ def download_all(
     steps: list[Callable[..., DownloadResult]] | None = None,
 ) -> list[DownloadResult]:
     results = []
-    for step in steps or (download_wakeword, download_piper_voice, download_whisper):
+    for step in steps or (download_wakeword, download_silero_vad, download_piper_voice,
+                          download_whisper):
         result = step(cfg, force=force, printer=printer)
         mark = {"downloaded": "OK  ", "present": "OK  ", "failed": "FAIL"}[result.status]
         detail = f" ({result.detail})" if result.detail else ""
