@@ -3,7 +3,7 @@
 Layout under ``roco.paths.models_dir()`` (``~/.roco/models``)::
 
     openwakeword/   melspectrogram.onnx, embedding_model.onnx, hey_jarvis_v0.1.onnx, ...
-    piper/          en_GB-alan-medium.onnx, en_GB-alan-medium.onnx.json
+    piper/          en_GB-cori-high.onnx, en_GB-cori-high.onnx.json
     whisper/        faster-whisper's Hugging Face cache (base.en)
 
 Only ``httpx`` (a core dependency) is imported at module level; openwakeword and
@@ -79,7 +79,7 @@ def wakeword_files(cfg: Config) -> list[Path]:
 
 def piper_voice_paths(cfg: Config) -> tuple[Path, Path]:
     """(model .onnx, config .onnx.json) for ``voice.tts.voice`` (a name or an .onnx path)."""
-    voice = str(cfg.get_path("voice.tts.voice", "en_GB-alan-medium"))
+    voice = str(cfg.get_path("voice.tts.voice", "en_GB-cori-high"))
     onnx = Path(voice).expanduser() if _looks_like_path(voice) else piper_dir() / f"{voice}.onnx"
     return onnx, onnx.with_name(onnx.name + ".json")
 
@@ -200,7 +200,7 @@ def download_piper_voice(
     printer: Printer = print,
     client: httpx.Client | None = None,
 ) -> DownloadResult:
-    voice = str(cfg.get_path("voice.tts.voice", "en_GB-alan-medium"))
+    voice = str(cfg.get_path("voice.tts.voice", "en_GB-cori-high"))
     name = f"Piper voice {voice}"
     onnx, config_json = piper_voice_paths(cfg)
     if not force and _valid_file(onnx) and _valid_file(config_json, is_json=True):

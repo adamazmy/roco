@@ -25,8 +25,8 @@ log = logging.getLogger(__name__)
 
 Audio = tuple[bytes, int]  # (int16 mono PCM, sample rate)
 
-# Smoother than the voices' own defaults (noise 0.667, noise_w 0.8): en_GB-alan-medium
-# sounds choppy with those. Chosen by ear in an A/B listening test.
+# Smoother than the voices' own defaults (noise 0.667, noise_w 0.8), which sound choppy.
+# Chosen by ear in A/B listening tests, on en_GB-alan-medium and again on en_GB-cori-high.
 DEFAULT_NOISE_SCALE = 0.5
 DEFAULT_NOISE_W = 0.333
 

@@ -10,7 +10,7 @@ All the AI runs on your own machine:
 |---|---|---|
 | Language model | your PC | [Ollama](https://ollama.com), `qwen2.5:7b` with native tool calling |
 | Speech-to-text | PC now, Pi later | faster-whisper `base.en` (int8, CPU) |
-| Text-to-speech | PC now, Pi later | Piper, `en_GB-alan-medium` |
+| Text-to-speech | PC now, Pi later | Piper, `en_GB-cori-high` |
 | Wake word | PC now, Pi later | openWakeWord `hey_jarvis` (ONNX) |
 | Face | PC window now, Pi display later | pygame |
 | Head | simulated now, PCA9685 later | 2 servos, pan/tilt |

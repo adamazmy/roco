@@ -29,7 +29,8 @@ def test_no_command_prints_help(capsys):
 
 # run and download-models (workstream B) have their own tests in test_voice_models.py:
 # with the voice extra installed, download-models would really hit the network.
-@pytest.mark.parametrize("argv", [["chat"], ["auth", "google"], ["demo-face"]])
+# demo-face (workstream C) opens a real pygame window when pygame is installed.
+@pytest.mark.parametrize("argv", [["chat"], ["auth", "google"]])
 def test_stubs_exit_cleanly(argv):
     # Stubs return EXIT_NOT_IMPLEMENTED until their workstream lands; afterwards
     # these commands need real hardware/services and get their own tests.

@@ -97,6 +97,8 @@ def _preload_llm(cfg: Config) -> threading.Thread:
         import httpx
 
         host = str(cfg.get_path("llm.host", "http://localhost:11434")).rstrip("/")
+        # On Windows "localhost" tries ::1 first; Ollama listens on IPv4 only (+2 s).
+        host = host.replace("://localhost", "://127.0.0.1")
         body = {"model": cfg.get_path("llm.model"),
                 "keep_alive": cfg.get_path("llm.keep_alive", "30m")}
         try:
