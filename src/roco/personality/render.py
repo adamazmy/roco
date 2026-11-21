@@ -60,13 +60,12 @@ ROAST = {
         "his sleep schedule. One quick jab, then get on with it."
     ),
     HIGH: (
-        "Roast {who} often and with bite: most replies open with a cheeky jab at what he's "
-        "doing or not doing, then help. Punchy, never mean."
+        "Roast {who} often and with bite: most replies carry a cheeky jab at what he's "
+        "doing or not doing. Punchy, never mean."
     ),
     MAX: (
-        "Savage mode, gloves off, no mercy: EVERY reply opens with a brutal, funny roast of "
-        "{who} (his habits, his choices, his excuses), never sympathy or \"oh dear\". Then "
-        "do what he asks."
+        "Savage mode, gloves off, no mercy: EVERY reply has a brutal, funny roast of "
+        "{who} (his habits, his choices, his excuses), never sympathy or \"oh dear\"."
     ),
 }
 
@@ -231,6 +230,22 @@ class PromptParts:
     user: str = "Adam"
     settings: PersonalitySettings = field(default_factory=PersonalitySettings)
     company: Company = field(default_factory=Company)
+    # The owner sounds genuinely upset this turn (roco.personality.core.is_distressed).
+    serious: bool = False
+
+
+SERIOUS_LINE = (
+    "{user} is genuinely upset right now: no jokes, no teasing, no flirting, no sarcasm. Be "
+    "kind, calm and real with him, and don't promise anything you can't do. If he talks "
+    "about hurting himself, gently tell him to call Samaritans on 116 123 or talk to someone "
+    "he trusts."
+)
+
+
+def serious_settings(s: PersonalitySettings) -> PersonalitySettings:
+    return s.with_values(
+        {"roast": 0, "flirt": 0, "sass": min(s.sass, 10), "energy": min(s.energy, 25)}
+    )
 
 
 EXAMPLES_LABEL = "The kind of tone (never reuse these exact words):"
@@ -260,6 +275,10 @@ def personality_section(s: PersonalitySettings, user: str) -> str:
         f"- {PROACTIVITY[band(s.proactivity)]}",
     ]
     if roast != OFF:
+        lines.append(
+            f"- Make every roast land: one short, specific jab about what {user} just said "
+            "or did, with a clear punchline. One good line beats three weak ones."
+        )
         lines.append(f"- {SENSITIVE_ON if s.sensitive_topics_ok else SENSITIVE_OFF}")
     lines.append(
         "Never say the example lines themselves: make up your own. When "
@@ -338,15 +357,22 @@ def reminder_line(s: PersonalitySettings, user: str) -> str:
         tone = "tease him now and then"
     if flirt >= HIGH:
         tone += " and flirt shamelessly" if flirt == MAX else " and flirt with him"
-    return (
-        f"Stay in character with {user}: {tone}, unless he is genuinely upset. "
-        "Vary how you open your replies."
-    )
+    line = f"Stay in character with {user}: {tone}, unless he is genuinely upset. "
+    if roast >= HIGH:
+        # Measured on qwen2.5:7b: at savage settings the roast replaced the action (2/6
+        # reminder requests called set_reminder, vs 6/6 at the default). Tool first fixes it.
+        line += (
+            "When he asks you to do something, call the tool FIRST, and only roast him in "
+            "the words that come after the tool result. "
+        )
+    return line + "Vary how you open your replies."
 
 
 def render_system_prompt(parts: PromptParts) -> str:
     user, name = parts.user, parts.name
     settings = effective_for_owner(parts.settings, parts.company)
+    if parts.serious:
+        settings = serious_settings(settings)
     intro = (
         f"You are {name}, a small desk robot with a hologram face who lives on {user}'s desk. "
         "You're a she. You speak British English and have quick, dry British wit: the best "
@@ -363,6 +389,6 @@ def render_system_prompt(parts: PromptParts) -> str:
         company_section(parts.company, parts.settings, user),
         HARD_RULES.format(user=user),
         TOOL_RULES.format(user=user),
-        reminder_line(settings, user),
+        SERIOUS_LINE.format(user=user) if parts.serious else reminder_line(settings, user),
     ]
     return "\n\n".join(s for s in sections if s)
