@@ -119,6 +119,7 @@ class Session:
         filler = ctx.server_cfg("filler", {}) or {}
         self._filler_on = bool(filler.get("enabled", True)) and bool(ctx.fillers)
         self._fast_tools = set(filler.get("fast_tools", []) or [])
+        self._wake_phrases = _wake_phrases(ctx)
 
     # ------------------------------------------------------------------ entry
     def run(self) -> None:
@@ -414,6 +415,10 @@ class Session:
             lat.mark("stt_done")
             lat.info["stt"] = dict(st.stt.stats)
         text = (text or "").strip()
+        if st.kind == "voice":
+            # The body sends a pre-roll before the wake word fired, so "Jarvis, what's on
+            # today?" (or a mishearing such as "Hey, George, ...") often starts the audio.
+            text = strip_wake(text, self._wake_phrases)
         lat.info["transcript"] = text
         if st.kind == "voice":
             self._send(Transcript(turn=st.turn, text=text))
@@ -570,6 +575,29 @@ def _frames(chunks: Iterable[tuple[bytes, int]], frame_ms: int,
             del buf[:size]
     if buf:
         yield bytes(buf[: len(buf) - len(buf) % 2]), rate
+
+
+def _wake_phrases(ctx: BrainContext) -> list[str]:
+    phrases: list[str] = []
+    try:
+        from roco.voice.models import wake_phrase
+
+        phrases.append(wake_phrase(ctx.cfg))
+    except Exception as exc:  # pragma: no cover - a broken wake word config
+        log.debug("No wake phrase to strip: %s", exc)
+    phrases += [str(p) for p in ctx.server_cfg("wake_aliases", []) or []]
+    return [p for p in phrases if p and p.strip()]
+
+
+def strip_wake(text: str, phrases: list[str]) -> str:
+    """Remove one leading wake phrase (or alias) from a transcript."""
+    from roco.voice.listener import strip_wake_phrase
+
+    for phrase in phrases:
+        stripped = strip_wake_phrase(text, phrase)
+        if stripped != text:
+            return stripped.strip()
+    return text
 
 
 def serve_connection(conn: Connection, ctx: BrainContext, stop: threading.Event) -> None:

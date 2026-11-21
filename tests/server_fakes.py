@@ -148,9 +148,12 @@ class ScriptBrain(Brain):
 
 def make_ctx(tmp_home, brain: Brain | None = None, bus: EventBus | None = None,
              engine: Any = None, tts: Any = None, executor: Executor | None = None,
-             **server_cfg: Any) -> BrainContext:
+             wake_word: str | None = None, **server_cfg: Any) -> BrainContext:
     bus = bus or EventBus()
-    cfg = load_config(overrides={"server": server_cfg} if server_cfg else None)
+    overrides: dict[str, Any] = {"server": server_cfg} if server_cfg else {}
+    if wake_word:
+        overrides["voice"] = {"wake_word": {"model": wake_word}}
+    cfg = load_config(overrides=overrides or None)
     ctx = BrainContext(
         cfg=cfg,
         bus=bus,
