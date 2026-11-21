@@ -104,6 +104,20 @@ def test_request_payload(mock, bus, registry):
     assert user == {"role": "user", "content": "how are you"}
 
 
+def test_extra_ollama_options_are_sent_and_cannot_override_named_ones():
+    from roco.brain.ollama import OllamaClient
+
+    client = OllamaClient(
+        "http://localhost:11434", "m", temperature=0.3, num_ctx=1024,
+        extra_options={"num_gpu": 99, "temperature": 1.5},
+    )
+    try:
+        options = client.build_payload([{"role": "user", "content": "hi"}])["options"]
+    finally:
+        client.close()
+    assert options == {"num_gpu": 99, "temperature": 0.3, "num_ctx": 1024}
+
+
 def test_no_tools_key_when_registry_empty(mock, bus):
     mock.script = [[content("[neutral] Fine.")]]
     run(make_brain(mock.url, bus), "hi")

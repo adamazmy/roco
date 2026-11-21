@@ -16,7 +16,7 @@ from datetime import date
 from html.parser import HTMLParser
 from typing import Any
 
-SNIPPET_CHARS = 100
+SNIPPET_CHARS = 70
 BODY_CHARS = 1500
 
 # Email content comes from third parties: label it so the model treats it as data.
@@ -33,12 +33,12 @@ def day_label(d: date) -> str:
 
 
 def email_line(msg_id: str, when: str, sender: str, subject: str, snippet: str) -> str:
-    """``- [id m1] Sat 22 Nov 10:00 from Alice Smith: Lunch? | Are we still on...``"""
+    """``- [id m1] Sat 22 Nov from Alice Smith: Lunch? Preview: Are we still on...``"""
     subject = clip(speakable(subject) or "(no subject)", 80)
     snippet = clip(speakable(snippet), SNIPPET_CHARS)
     line = f"- [id {msg_id}] {when + ' ' if when else ''}from {speakable(sender) or 'unknown'}"
     line += f": {subject}"
-    return line + (f" | {snippet}" if snippet else "")
+    return line + (f" Preview: {snippet}" if snippet else "")
 
 
 def listing(lines: list[str], total: int | None = None) -> str:

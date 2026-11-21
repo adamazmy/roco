@@ -45,6 +45,7 @@ from roco.integrations.text import (
     truncate,
 )
 from roco.tools import ToolContext
+from roco.tools.clock import spoken_time
 from roco.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -331,7 +332,7 @@ class GoogleTools:
             self.calendar.events().insert(calendarId=self.calendar_id, body=body).execute()
         )
         when = _format_timed(start, end, start.date())
-        return f"Created: {day_label(start.date())} {when} {created.get('summary', title)}."
+        return f"Created: {created.get('summary', title)}, {day_label(start.date())}, {when}."
 
     def _parse_day(self, value: str | None) -> date:
         text = str(value or "").strip().lower()
@@ -419,8 +420,9 @@ def build_event_body(
 
 
 def format_events(items: list[dict[str, Any]], tz: tzinfo, first: date, days: int) -> str:
-    """One line per day that has events, e.g.
-    ``Tue 21 Nov: 09:30-10:00 Dentist; all day: Mum's birthday``.
+    """One line per day that has events, times in words so they are spoken naturally, e.g.
+    ``Tue 21 Nov: Dentist, half past nine in the morning to ten o'clock in the morning;
+    all day: Mum's birthday``.
 
     An event that started before the window is listed on the window's first day.
     """
@@ -445,7 +447,7 @@ def format_events(items: list[dict[str, Any]], tz: tzinfo, first: date, days: in
                 span = f" ({day_label(start)} to {day_label(end)})"
             whole.append(f"all day: {title}{span}")
         else:
-            timed.append((start, f"{_format_timed(start, end, day)} {title}"))
+            timed.append((start, f"{title}, {_format_timed(start, end, day)}"))
     if not by_day:
         return "No events."
     lines = []
@@ -484,13 +486,22 @@ def _parse_dt(value: str, event_tz: str | None, tz: tzinfo) -> datetime:
 
 def _format_timed(start: datetime, end: datetime, day: date) -> str:
     def label(dt: datetime, ref: date) -> str:
-        hhmm = dt.strftime("%H:%M")
-        return hhmm if dt.date() == ref else f"{day_label(dt.date())} {hhmm}"
+        said = spoken_time(dt)
+        return said if dt.date() == ref else f"{day_label(dt.date())} {said}"
 
     start_s = label(start, day)
     if end <= start:
         return start_s
-    return f"{start_s}-{label(end, start.date())}"
+    end_s = label(end, start.date())
+    # "seven o'clock to eight o'clock in the morning", not "... in the morning" twice.
+    for part in _DAY_PARTS:
+        if start_s.endswith(part) and end_s.endswith(part) and start.date() == end.date():
+            start_s = start_s[: -len(part)]
+            break
+    return f"{start_s} to {end_s}"
+
+
+_DAY_PARTS = (" in the morning", " in the afternoon", " in the evening", " at night")
 
 
 def _event_title(ev: dict[str, Any]) -> str:
@@ -559,7 +570,7 @@ def _email_time(msg: dict[str, Any], tz: tzinfo) -> str:
     except (KeyError, TypeError, ValueError):
         return ""
     dt = datetime.fromtimestamp(ms / 1000, tz)
-    return f"{day_label(dt.date())} {dt:%H:%M}"
+    return day_label(dt.date())  # a clock time per email is noise when read aloud
 
 
 def extract_body(payload: dict[str, Any]) -> str:

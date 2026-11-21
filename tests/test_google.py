@@ -291,7 +291,10 @@ def test_events_spec_example():
         all_day("Mum's birthday", "2026-11-21", "2026-11-22"),
     ]
     tools = make_tools(FakeCalendar(items=items))
-    expected = "Sat 21 Nov: 09:30-10:00 Dentist; all day: Mum's birthday"
+    expected = (
+        "Sat 21 Nov: Dentist, half past nine to ten o'clock in the morning; "
+        "all day: Mum's birthday"
+    )
     assert tools.get_events("2026-11-21") == expected
 
 
@@ -313,7 +316,9 @@ def test_events_sorted_location_and_skips():
     ]
     out = make_tools(FakeCalendar(items=items)).get_events("2026-11-21")
     assert out == (
-        "Sat 21 Nov: 07:00-08:00 Gym; 12:00-13:00 Lunch at The Crown; 15:00-15:30 (no title)"
+        "Sat 21 Nov: Gym, seven o'clock to eight o'clock in the morning; "
+        "Lunch at The Crown, midday to one o'clock in the afternoon; "
+        "(no title), three o'clock to half past three in the afternoon"
     )
 
 
@@ -325,15 +330,19 @@ def test_events_multi_day_window():
     ]
     out = make_tools(FakeCalendar(items=items)).get_events("2026-11-21", 3)
     assert out.splitlines() == [
-        "Sat 21 Nov: 22:00-Sun 22 Nov 02:00 Party; all day: Holiday (Wed 18 Nov to Tue 24 Nov)",
-        "Mon 23 Nov: 09:00-09:30 Call",
+        "Sat 21 Nov: Party, ten o'clock at night to Sun 22 Nov two o'clock in the morning; "
+        "all day: Holiday (Wed 18 Nov to Tue 24 Nov)",
+        "Mon 23 Nov: Call, nine o'clock to half past nine in the morning",
     ]
 
 
 def test_event_started_before_window_shows_full_start():
     items = [timed("Night shift", "2026-11-20T22:00:00Z", "2026-11-21T06:00:00Z")]
     out = make_tools(FakeCalendar(items=items)).get_events("2026-11-21")
-    assert out == "Sat 21 Nov: Fri 20 Nov 22:00-Sat 21 Nov 06:00 Night shift"
+    assert out == (
+        "Sat 21 Nov: Night shift, Fri 20 Nov ten o'clock at night "
+        "to Sat 21 Nov six o'clock in the morning"
+    )
 
 
 def test_events_timezone_conversion_and_dst():
@@ -342,7 +351,7 @@ def test_events_timezone_conversion_and_dst():
         timed("NY call", "2026-11-21T09:00:00-05:00", "2026-11-21T09:30:00-05:00"),
     ]
     assert make_tools(FakeCalendar(items=items)).get_events("2026-11-21") == (
-        "Sat 21 Nov: 14:00-14:30 NY call"
+        "Sat 21 Nov: NY call, two o'clock to half past two in the afternoon"
     )
     # UK clocks go forward at 01:00 UTC on Sunday 29 March 2026.
     items = [
@@ -350,12 +359,18 @@ def test_events_timezone_conversion_and_dst():
         timed("After", "2026-03-29T09:00:00Z", "2026-03-29T10:00:00Z"),
     ]
     out = make_tools(FakeCalendar(items=items)).get_events("2026-03-28", 2)
-    assert out.splitlines() == ["Sat 28 Mar: 09:00-10:00 Before", "Sun 29 Mar: 10:00-11:00 After"]
+    assert out.splitlines() == [
+        "Sat 28 Mar: Before, nine o'clock to ten o'clock in the morning",
+        "Sun 29 Mar: After, ten o'clock to eleven o'clock in the morning",
+    ]
     # Same events viewed from another configured timezone.
     out = make_tools(FakeCalendar(items=items), tz=ZoneInfo("Asia/Tokyo")).get_events(
         "2026-03-28", 2
     )
-    assert out.splitlines() == ["Sat 28 Mar: 18:00-19:00 Before", "Sun 29 Mar: 18:00-19:00 After"]
+    assert out.splitlines() == [
+        "Sat 28 Mar: Before, six o'clock to seven o'clock in the evening",
+        "Sun 29 Mar: After, six o'clock to seven o'clock in the evening",
+    ]
 
 
 def test_events_request_window_handles_dst():
@@ -408,7 +423,7 @@ def test_create_event_local_time_payload():
         "end": {"dateTime": "2026-11-21T10:00:00+00:00", "timeZone": "Europe/London"},
         "description": "Bring card",
     }
-    assert out == "Created: Sat 21 Nov 09:30-10:00 Dentist."
+    assert out == "Created: Dentist, Sat 21 Nov, half past nine to ten o'clock in the morning."
 
 
 def test_create_event_dst_offset_and_string_duration():
@@ -424,7 +439,7 @@ def test_create_event_with_offset_is_converted():
     cal = FakeCalendar()
     out = make_tools(cal).create_event("Call", "2026-11-21T09:00:00-05:00", 60)
     assert cal.events().insert_calls[0]["body"]["start"]["dateTime"] == "2026-11-21T14:00:00+00:00"
-    assert "14:00-15:00" in out
+    assert "two o'clock to three o'clock in the afternoon" in out
 
 
 @pytest.mark.parametrize(
@@ -465,10 +480,10 @@ def test_unread_emails_listing():
     out = make_tools(gmail=gmail).get_unread_emails(5)
     lines = out.splitlines()
     assert lines[0] == "2 email(s) (about 7 in total):"
-    assert lines[1].startswith("- [id m1] Sat 22 Nov 10:00 from Alice Smith: Lunch? | ")
+    assert lines[1].startswith("- [id m1] Sat 22 Nov from Alice Smith: Lunch? Preview: ")
     assert "I'll book" in lines[1] and lines[1].endswith("...")
-    assert len(lines[1].split(" | ", 1)[1]) == text.SNIPPET_CHARS
-    assert lines[2] == "- [id m2] Sat 22 Nov 10:00 from bob@example.com: (no subject)"
+    assert len(lines[1].split(" Preview: ", 1)[1]) == text.SNIPPET_CHARS
+    assert lines[2] == "- [id m2] Sat 22 Nov from bob@example.com: (no subject)"
     msgs = gmail.messages()
     assert msgs.list_calls[0] == {"userId": "me", "q": "is:unread in:inbox", "maxResults": 5}
     assert msgs.get_calls[0]["format"] == "metadata"
@@ -487,7 +502,7 @@ def test_search_emails():
     tools = make_tools(gmail=gmail)
     out = tools.search_emails("from:bank newer_than:7d", 3)
     assert gmail.messages().list_calls[0]["q"] == "from:bank newer_than:7d"
-    assert "[id m1]" in out and "from Bank: Statement | Hi" in out
+    assert "[id m1]" in out and "from Bank: Statement Preview: Hi" in out
     assert make_tools().search_emails("nothing") == "No emails match."
     assert make_tools().search_emails("  ").startswith("Error: query")
 
@@ -747,12 +762,15 @@ def test_emoji_stripped_from_titles_subjects_and_senders():
              timed("\U0001f9ed Career prep \U0001f44d\U0001f3fd", "2026-11-21T13:00:00Z",
                    "2026-11-21T15:45:00Z")]
     out = make_tools(FakeCalendar(items=items)).get_events("2026-11-21")
-    assert out == "Sat 21 Nov: 08:00-09:00 Gym; 13:00-15:45 Career prep"
+    assert out == (
+        "Sat 21 Nov: Gym, eight o'clock to nine o'clock in the morning; "
+        "Career prep, one o'clock to quarter to four in the afternoon"
+    )
     gmail = FakeGmail(messages={
         "m1": meta("m1", '"\u2728 Café Team" <x@y.com>', "Sale \U0001f525 now", "Hi \u2764\ufe0f")
     })
     line = make_tools(gmail=gmail).get_unread_emails().splitlines()[1]
-    assert line.endswith("from Café Team: Sale now | Hi")
+    assert line.endswith("from Café Team: Sale now Preview: Hi")
     assert g.speakable("Mum's 50th — party at 7pm £20") == "Mum's 50th — party at 7pm £20"
 
 
@@ -769,4 +787,4 @@ def test_link_location_becomes_online():
     items = [timed("RnD meeting", "2026-11-23T18:00:00Z", "2026-11-23T19:00:00Z",
                    location="https://us06web.zoom.us/j/123?pwd=abc")]
     out = make_tools(FakeCalendar(items=items)).get_events("2026-11-23")
-    assert out == "Mon 23 Nov: 18:00-19:00 RnD meeting (online)"
+    assert out == "Mon 23 Nov: RnD meeting (online), six o'clock to seven o'clock in the evening"
