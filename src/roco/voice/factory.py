@@ -42,9 +42,9 @@ def require_voice_extra() -> None:
 
 
 def require_models(cfg: Config) -> None:
-    from roco.voice.models import piper_voice_paths, wakeword_files
+    from roco.voice.models import tts_model_files, wakeword_files
 
-    missing = [p for p in [*wakeword_files(cfg), *piper_voice_paths(cfg)] if not p.is_file()]
+    missing = [p for p in [*wakeword_files(cfg), *tts_model_files(cfg)] if not p.is_file()]
     if missing:
         raise VoiceUnavailable(
             "Model files missing: " + ", ".join(p.name for p in missing)
@@ -56,20 +56,46 @@ def require_models(cfg: Config) -> None:
 
 
 def create_tts(cfg: Config) -> Any:
-    from roco.voice.models import piper_voice_paths
+    """The configured TTS callable: ``tts(text) -> Iterable[(int16 pcm, rate)]`` + ``load()``.
+
+    ``voice.tts.engine`` picks piper or kokoro; ``voice.tts.postfx`` adds the EQ /
+    compression / room post-processing on top of either (:mod:`roco.voice.postfx`).
+    """
+    from roco.voice.models import kokoro_paths, piper_voice_paths, tts_engine
+    from roco.voice.postfx import PostFx, PostFxSettings, ProcessedTTS
     from roco.voice.tts import DEFAULT_NOISE_SCALE, DEFAULT_NOISE_W, PiperTTS, Synthesis
 
     def setting(key: str, default: float | None) -> float | None:
         value = cfg.get_path(f"voice.tts.{key}", default)
         return None if value is None else float(value)
 
-    onnx, config_json = piper_voice_paths(cfg)
-    settings = Synthesis(
-        length_scale=setting("length_scale", 1.0),
-        noise_scale=setting("noise_scale", DEFAULT_NOISE_SCALE),
-        noise_w=setting("noise_w", DEFAULT_NOISE_W),
-    )
-    return PiperTTS(onnx, config_json, settings)
+    engine = tts_engine(cfg)
+    tts: Any
+    if engine == "kokoro":
+        from roco.voice.kokoro_tts import KokoroTTS
+
+        model, voices = kokoro_paths(cfg)
+        kokoro = cfg.get_path("voice.tts.kokoro", {}) or {}
+        threads = kokoro.get("threads")
+        tts = KokoroTTS(
+            model, voices,
+            voice=str(kokoro.get("voice", "bf_emma")),
+            speed=float(kokoro.get("speed", 1.0)),
+            lang=str(kokoro.get("lang", "en-gb")),
+            threads=int(threads) if threads else None,
+        )
+    elif engine == "piper":
+        onnx, config_json = piper_voice_paths(cfg)
+        settings = Synthesis(
+            length_scale=setting("length_scale", 1.0),
+            noise_scale=setting("noise_scale", DEFAULT_NOISE_SCALE),
+            noise_w=setting("noise_w", DEFAULT_NOISE_W),
+        )
+        tts = PiperTTS(onnx, config_json, settings)
+    else:
+        raise VoiceUnavailable(f"Unknown voice.tts.engine {engine!r}: use piper or kokoro")
+    fx = PostFxSettings.from_config(cfg.get_path("voice.tts.postfx"))
+    return ProcessedTTS(tts, PostFx(fx)) if fx else tts
 
 
 def create_speaker(cfg: Config, bus: EventBus | None, warm_up: bool = True) -> Any:

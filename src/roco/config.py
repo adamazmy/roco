@@ -99,8 +99,24 @@ DEFAULTS: dict[str, Any] = {
             "vad_filter": True,
         },
         "tts": {
+            # piper | kokoro (docs/ROCO_SPEC.md §3; scripts/voice_ab.py compares them).
+            "engine": "piper",
+            # Piper: voice name (or .onnx path) and synthesis settings.
             "voice": "en_GB-cori-high",
             "length_scale": 1.0,
+            "noise_scale": 0.5,
+            "noise_w": 0.333,
+            # Light EQ + soft compression + small room (roco.voice.postfx): false, true
+            # or a mapping such as {"reverb": 0.1, "compress": false}.
+            "postfx": False,
+            "kokoro": {
+                "voice": "bf_emma",
+                "speed": 1.0,
+                "lang": "en-gb",
+                "model": "kokoro-v1.0.onnx",  # names live in ~/.roco/models/kokoro
+                "voices": "voices-v1.0.bin",
+                "threads": None,  # onnxruntime CPU threads; None = all cores
+            },
         },
     },
     "face": {
