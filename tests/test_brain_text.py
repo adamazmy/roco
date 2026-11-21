@@ -226,10 +226,10 @@ def test_history_caps_tool_results_and_stamps_their_time(tmp_path):
                at=datetime(2026, 11, 20, 20, 5, tzinfo=tz))
     tools = [m for m in h.for_model(now=datetime(2026, 11, 20, 21, 0, tzinfo=tz))
              if m["role"] == "tool"]
-    assert "fetched on Thursday 19 November at 09:12" in tools[0]["content"]
+    assert "fetched yesterday." in tools[0]["content"]
     assert tools[0]["content"].endswith("... (cut short)")
     assert len(tools[0]["content"]) < 600
-    assert "fetched at 20:05 today" in tools[1]["content"]
+    assert "fetched about 55 minutes ago." in tools[1]["content"]
     assert tools[1]["content"].endswith(") short")
 
 
@@ -260,3 +260,44 @@ def test_history_squeezes_tool_results_of_older_turns():
 )
 def test_splitter_drops_stage_directions_and_asterisks(text, expected):
     assert split(text) == expected
+
+
+def test_history_stamps_never_contain_a_clock_time(tmp_path):
+    import re
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 11, 21, 11, 4, tzinfo=tz)
+    h = History(10, tmp_path / "h.json")
+    for ago in (timedelta(seconds=30), timedelta(minutes=7), timedelta(hours=3),
+                timedelta(days=4)):
+        h.add_turn("q", "a", "neutral", _trace("result"), at=now - ago)
+    contents = [m["content"] for m in h.for_model(now=now) if m["role"] == "tool"]
+    assert [c.split(".")[0] for c in contents] == [
+        "(Old result, fetched just now",
+        "(Old result, fetched about 7 minutes ago",
+        "(Old result, fetched about 3 hours ago",
+        "(Old result, fetched on Tuesday 17 November",
+    ]
+    assert not any(re.search(r"\d{1,2}:\d{2}", c) for c in contents)
+
+
+def test_old_clock_answers_are_not_replayed(tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/London")
+    h = History(5, tmp_path / "h.json")
+    trace = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "get_current_time", "arguments": {}}}]},
+        {"role": "tool", "tool_name": "get_current_time",
+         "content": "four minutes past eleven in the morning on Saturday (11:04)"},
+    ]
+    h.add_turn("time?", "It's four minutes past eleven.", "neutral", trace,
+               at=datetime(2026, 11, 21, 11, 4, tzinfo=tz))
+    tool = [m for m in h.for_model(now=datetime(2026, 11, 21, 11, 20, tzinfo=tz))
+            if m["role"] == "tool"][0]
+    assert "11:04" not in tool["content"] and "eleven" not in tool["content"]
+    assert "call get_current_time again" in tool["content"]
