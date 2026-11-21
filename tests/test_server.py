@@ -459,3 +459,35 @@ def test_missing_speech_models_raise_brain_unavailable(isolated_home, bus):
     with pytest.raises(BrainUnavailable, match="roco download-models"):
         create_brain_context(cfg, bus=bus, brain=ScriptBrain(bus), stt=object(), tts=broken_tts,
                              token="t")
+
+
+# ---------------------------------------------------------------------- wake phrase
+def test_leading_wake_phrase_is_stripped_from_voice_turns(isolated_home, body_factory, bus):
+    brain = ScriptBrain(bus, [("say", "Sure.")])
+    # FakeEngine hears "w0 w1 w2 w3"; with wake word "w0" the pre-roll's "w0" goes.
+    body = body_factory(make_ctx(isolated_home, brain=brain, bus=bus, wake_word="w0"))
+    body.hello()
+    voice_turn(body, words=4)
+    frames = body.until_turn_done(1)
+    final = [f for f in frames if isinstance(f, Transcript) and f.final]
+    assert final[-1].text == "W1 w2 w3"
+    assert brain.heard == ["W1 w2 w3"]
+
+
+def test_wake_phrase_alone_is_an_empty_turn(isolated_home, body_factory, bus):
+    brain = ScriptBrain(bus)
+    body = body_factory(make_ctx(isolated_home, brain=brain, bus=bus, wake_word="w0"))
+    body.hello()
+    voice_turn(body, words=1)
+    frames = body.until_turn_done(1)
+    assert frames[-1].text == ""
+    assert brain.heard == []
+
+
+def test_strip_wake_aliases():
+    from roco.server.session import strip_wake
+
+    phrases = ["hey jarvis", "hey george"]
+    assert strip_wake("Hey, George, what's on today?", phrases) == "What's on today?"
+    assert strip_wake("Jarvis, what time is it?", phrases) == "What time is it?"
+    assert strip_wake("What does George think?", phrases) == "What does George think?"

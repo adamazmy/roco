@@ -57,6 +57,9 @@ DEFAULTS: dict[str, Any] = {
     "server": {
         # Brain server (roco brain / roco run). One JSON line per turn, in ~/.roco.
         "latency_log": "latency.jsonl",
+        # Stripped from the start of voice transcripts, besides the wake word's own phrase
+        # (the body's pre-roll catches it). Whisper's mishearings of "hey Jarvis".
+        "wake_aliases": ["hey george"],
         "tts_frame_ms": 80,  # TTS audio block size sent to the body (50-100 ms)
         "filler": {
             # Said at once when a slow tool is about to run and nothing was said yet.
