@@ -119,7 +119,7 @@ def test_yousaf_rule_in_prompt():
     goose = people.find("yousaf")
     text = render_system_prompt(PromptParts(company=Company(people=(goose,))))
     assert "Never call him Yousaf" in text and "Goose" in text and "Bum" in text
-    assert "no mercy: EVERY reply opens with a brutal, funny roast of Goose" in text
+    assert "no mercy: EVERY reply has a brutal, funny roast of Goose" in text
     assert "Never read out Adam's email" in text  # Adam's data stays private
     assert "Yousaf is here" not in text
 
@@ -382,3 +382,41 @@ def test_brain_refuses_hidden_tool_called_anyway(bus):
     brain.respond("What's on my calendar?")
     assert not called
     assert "not available while other people" in client.calls[-1][0][-1]["content"]
+
+
+# --------------------------------------------------------------------------- distress guard
+@pytest.mark.parametrize(
+    "text",
+    [
+        "My grandad's just been taken to hospital and I'm really scared.",
+        "I'm so stressed I can't cope.",
+        "My dog died this morning.",
+        "I got dumped me last night",  # STT grammar does not matter
+        "Honestly I'm not okay.",
+    ],
+)
+def test_distress_switches_prompt_to_no_jokes(text):
+    from roco.personality.core import is_distressed
+
+    p = Personality(preset("unhinged"))
+    assert is_distressed(text)
+    serious = p.system_prompt(message=text)
+    assert "genuinely upset right now: no jokes" in serious
+    assert "Savage mode" not in serious and "Samaritans" in serious
+    assert "Savage mode" in p.system_prompt(message="Roast my code.")
+
+
+@pytest.mark.parametrize(
+    "text", ["Roast me.", "I'm a bit grumpy today.", "What time is it?", "Hospitality jobs?"]
+)
+def test_ordinary_text_is_not_distress(text):
+    from roco.personality.core import is_distressed
+
+    assert not is_distressed(text)
+
+
+def test_high_roast_closing_line_puts_the_tool_first():
+    assert "call the tool FIRST" in prompt_for(roast=100)
+    assert "call the tool FIRST" not in prompt_for(roast=50)
+    assert "Make every roast land" in prompt_for(roast=50)
+    assert "Make every roast land" not in prompt_for(roast=0)

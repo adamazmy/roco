@@ -54,6 +54,24 @@ ChangeListener = Callable[[dict[str, Any]], None]
 # someone who may not hear it is in the room (spec §5 Guest, §7 Yousaf, §10).
 PRIVATE_TOOL = re.compile(r"^(?:get|list|search|read)_.*(?:event|email|mail|calendar)")
 
+# Clear signs the owner is genuinely upset (spec §2 hard rule: the bit drops). The brain
+# then renders that turn with no jokes, whatever the settings. Measured on qwen2.5:7b: the
+# prompt rule alone still let unhinged mode joke about a hospital visit about 1 time in 9.
+DISTRESS = re.compile(
+    r"\b(?:scared|terrified|frightened|panick?ing|panic attack|anxious|anxiety|depressed|"
+    r"depression|can'?t cope|falling apart|crying|in tears|heartbroken|devastated|grieving|"
+    r"passed away|died|dying|funeral|(?:in|to) (?:the )?hospital|a ?& ?e|ambulance|"
+    r"diagnosed|cancer|broke up|breaking up|dumped me|lost my job|got fired|suicid\w*|"
+    r"kill myself|hurt myself|self[- ]harm|(?:really|so|very) (?:upset|sad|worried|stressed|"
+    r"down|low)|worried sick|not okay|not ok|miss (?:him|her) so much)\b",
+    re.IGNORECASE,
+)
+
+
+def is_distressed(text: str) -> bool:
+    return bool(DISTRESS.search(text or ""))
+
+
 BAND_WORDS = ("off", "low", "medium", "high", "max")
 LABELS = {
     "roast": "Roast", "flirt": "Flirting", "sass": "Sass", "chattiness": "Chattiness",
@@ -238,10 +256,12 @@ class Personality:
             log.warning("Could not save personality settings to %s: %s", self.state_path, exc)
 
     # ------------------------------------------------------------------ brain hooks
-    def system_prompt(self, name: str = "ROCO", user: str = "Adam") -> str:
+    def system_prompt(self, name: str = "ROCO", user: str = "Adam", message: str = "") -> str:
+        """The system prompt; ``message`` is this turn's user text (distress check)."""
+        serious = is_distressed(message)
         with self._lock:
             parts = PromptParts(name=name, user=user, settings=self._settings,
-                                company=self._company)
+                                company=self._company, serious=serious)
         return render_system_prompt(parts)
 
     def allowed_tool(self, tool_name: str) -> bool:

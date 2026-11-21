@@ -193,7 +193,7 @@ class OllamaBrain(Brain):
             past = self.history.for_model(
                 tags=self.history_tags, tools=self.history_tools, now=started
             )
-            messages = [self._system_message(), *past]
+            messages = [self._system_message(text), *past]
             # No current time is added here: tried after the user text, it made qwen2.5 skip
             # tools far more often (2/4 vs 4/4 scenario runs). Time comes from the tool.
             messages.append({"role": "user", "content": text})
@@ -242,10 +242,11 @@ class OllamaBrain(Brain):
             {"role": "tool", "content": result, "tool_name": "get_current_time"},
         ]
 
-    def _system_message(self) -> dict[str, str]:
+    def _system_message(self, text: str = "") -> dict[str, str]:
         assistant = self.config.section("assistant")
+        # The user text only switches the prompt to "no jokes" on genuine distress.
         prompt = self.personality.system_prompt(
-            str(assistant.get("name", "ROCO")), self._user_name()
+            str(assistant.get("name", "ROCO")), self._user_name(), text
         )
         now = self._clock()
         # Date only: the exact time comes from get_current_time, whose answer is spoken-style
