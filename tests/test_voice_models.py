@@ -51,6 +51,8 @@ def test_piper_voice_urls():
     onnx, js = models.piper_voice_urls("en_GB-alan-medium")
     assert onnx.endswith("/en/en_GB/alan/medium/en_GB-alan-medium.onnx")
     assert js == onnx + ".json"
+    onnx, _ = models.piper_voice_urls("en_GB-cori-high")
+    assert onnx.endswith("/en/en_GB/cori/high/en_GB-cori-high.onnx")
     onnx, _ = models.piper_voice_urls("en_GB-northern_english_male-medium")
     assert "/en/en_GB/northern_english_male/medium/" in onnx
     with pytest.raises(ValueError):
@@ -59,8 +61,8 @@ def test_piper_voice_urls():
 
 def test_model_paths_live_in_roco_home(config, isolated_home):
     onnx, js = models.piper_voice_paths(config)
-    assert onnx == isolated_home / "models" / "piper" / "en_GB-alan-medium.onnx"
-    assert js.name == "en_GB-alan-medium.onnx.json"
+    assert onnx == isolated_home / "models" / "piper" / "en_GB-cori-high.onnx"
+    assert js.name == "en_GB-cori-high.onnx.json"
     names = [p.name for p in models.wakeword_files(config)]
     assert names == ["melspectrogram.onnx", "embedding_model.onnx", "hey_jarvis_v0.1.onnx"]
 
@@ -265,7 +267,8 @@ def test_preload_llm_posts_empty_generate(monkeypatch, config):
 
     monkeypatch.setattr(httpx, "post", fake_post)
     app._preload_llm(config).join(5)
-    assert calls == [("http://localhost:11434/api/generate",
+    # localhost is pinned to IPv4: on Windows ::1 is tried first and costs ~2 s.
+    assert calls == [("http://127.0.0.1:11434/api/generate",
                       {"model": "qwen2.5:7b", "keep_alive": "30m"})]
 
 

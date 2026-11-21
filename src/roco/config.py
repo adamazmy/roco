@@ -72,7 +72,7 @@ DEFAULTS: dict[str, Any] = {
             "vad_filter": True,
         },
         "tts": {
-            "voice": "en_GB-alan-medium",
+            "voice": "en_GB-cori-high",
             "length_scale": 1.0,
         },
     },

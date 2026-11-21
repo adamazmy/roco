@@ -42,7 +42,7 @@ voice:
     device: cpu            # or cuda
     compute_type: int8
   tts:
-    voice: en_GB-alan-medium
+    voice: en_GB-cori-high
     length_scale: 1.0      # >1 slower, <1 faster
 
 face:
