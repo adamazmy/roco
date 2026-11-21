@@ -44,6 +44,14 @@ _turn_ids = itertools.count(1)
 APOLOGY_UNREACHABLE = "Sorry, I can't reach my brain at the moment. Is Ollama running?"
 APOLOGY_TIMEOUT = "Sorry, I'm thinking far too slowly just now. Could you try again in a moment?"
 APOLOGY_GENERIC = "Sorry, something went wrong in my head. Could you try that again?"
+
+# "What time is it?", "what's the time now", "tell me the time": a plain question about
+# the current time, answered from a prefetched get_current_time result.
+TIME_QUESTION = re.compile(
+    r"\b(what\s+time\s+is\s+it|what(?:'s|\s+is)\s+the\s+time|tell\s+me\s+the\s+time"
+    r"|the\s+time\s+now|current\s+time)\b",
+    re.IGNORECASE,
+)
 APOLOGY_TANGLED = "Sorry, I got a bit tangled up there. Could you ask me that again?"
 
 
@@ -171,8 +179,10 @@ class OllamaBrain(Brain):
             # No current time is added here: tried after the user text, it made qwen2.5 skip
             # tools far more often (2/4 vs 4/4 scenario runs). Time comes from the tool.
             messages.append({"role": "user", "content": text})
+            prefetched = self._prefetch_time(text, turn)
+            messages.extend(prefetched)
             try:
-                trace = self._converse(messages, reply, turn)
+                trace = prefetched + self._converse(messages, reply, turn)
             except OllamaError as exc:
                 log.warning("[turn %d] Ollama failed (%s): %s", turn, exc.kind, exc)
                 return self._apologise(reply, apology_for(exc, self.model))
@@ -195,6 +205,25 @@ class OllamaBrain(Brain):
         self.client.close()
 
     # ------------------------------------------------------------------ internals
+    def _prefetch_time(self, text: str, turn: int) -> list[dict[str, Any]]:
+        """For a plain "what time is it?", call get_current_time before the model does.
+
+        Measured on qwen2.5:7b: later in a conversation it often works the time out from
+        old reminder results ("at 11:58, in 20 minutes") and states a wrong one instead of
+        calling the tool. Putting the time in the prompt fixed that but made it skip
+        other tools ("I've set a reminder" with no set_reminder call). A real tool
+        exchange added here does neither, and saves a model round.
+        """
+        if not TIME_QUESTION.search(text) or "get_current_time" not in self.registry:
+            return []
+        result = self.registry.call("get_current_time", {})
+        log.debug("[turn %d] prefetched get_current_time -> %s", turn, result)
+        call = {"function": {"name": "get_current_time", "arguments": {}}}
+        return [
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "content": result, "tool_name": "get_current_time"},
+        ]
+
     def _system_message(self) -> dict[str, str]:
         assistant = self.config.section("assistant")
         prompt = system_prompt(

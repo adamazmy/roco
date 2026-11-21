@@ -185,7 +185,8 @@ def test_one_tool_call(mock, bus, registry):
         [tool_calls(("get_current_time", {}))],
         [content("[neutral] It's five past two.")],
     ]
-    reply, sentences = run(make_brain(mock.url, bus, registry), "what time is it?")
+    # Worded so the "what time is it" prefetch does not apply: the model calls the tool.
+    reply, sentences = run(make_brain(mock.url, bus, registry), "how late is it getting?")
 
     assert reply == "It's five past two."
     second = mock.requests[1]["messages"]
@@ -439,3 +440,34 @@ def test_connection_is_reused_between_turns(mock, bus):
     run(brain, "a")
     run(brain, "b")
     assert len(ports) == 2 and ports[0] == ports[1]  # same TCP connection
+
+
+@pytest.mark.parametrize(
+    "said", ["What time is it?", "and what time is it now", "What's the time?", "tell me the time"]
+)
+def test_time_question_is_answered_from_a_prefetched_clock(mock, bus, registry, said):
+    mock.script = [[content("[neutral] It's five past two.")]]
+    brain = make_brain(mock.url, bus, registry)
+    reply, _ = run(brain, said)
+
+    assert reply == "It's five past two."
+    assert len(mock.requests) == 1  # no extra round for the tool call
+    sent = mock.requests[0]["messages"]
+    assert sent[-3] == {"role": "user", "content": said}
+    assert sent[-2]["tool_calls"][0]["function"]["name"] == "get_current_time"
+    assert sent[-1] == {
+        "role": "tool",
+        "content": "Friday 20 November 2026, 14:05",
+        "tool_name": "get_current_time",
+    }
+    # Kept in history like a real call, so later turns still see the tool being used.
+    run(brain, "thanks")
+    later = mock.requests[1]["messages"]
+    assert any(m.get("tool_name") == "get_current_time" for m in later)
+
+
+@pytest.mark.parametrize("said", ["Remind me at what time the bins go out", "Time for tea?"])
+def test_other_questions_are_not_prefetched(mock, bus, registry, said):
+    mock.script = [[content("[neutral] Righto.")]]
+    run(make_brain(mock.url, bus, registry), said)
+    assert not any(m["role"] == "tool" for m in mock.requests[0]["messages"])
