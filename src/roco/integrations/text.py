@@ -82,11 +82,23 @@ def speakable(text: str) -> str:
     the tool returns, and the Windows console can't print most of them either.
     """
     kept = []
-    for ch in text:
+    for ch in strip_invisible(text):
         if ch in _EMOJI_GLUE or 0x1F3FB <= ord(ch) <= 0x1F3FF:  # skin-tone modifiers
             continue
         kept.append(" " if unicodedata.category(ch) == "So" else ch)
     return " ".join("".join(kept).split())
+
+
+# Marketing emails pad their preview text with invisible characters so mail apps show
+# only the teaser: combining grapheme joiner, Hangul fillers, and format characters
+# (zero-width space/joiners, soft hyphen, BOM...), which are Unicode category Cf.
+_INVISIBLE_EXTRA = {"͏", "ᅟ", "ᅠ", "ㅤ", "ﾠ"}
+
+
+def strip_invisible(text: str) -> str:
+    return "".join(
+        ch for ch in text if ch not in _INVISIBLE_EXTRA and unicodedata.category(ch) != "Cf"
+    )
 
 
 # --------------------------------------------------------------------------- HTML -> text
@@ -136,7 +148,7 @@ def html_to_text(markup: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    text = text.replace("\r\n", "\n").replace("\r", "\n").replace(" ", " ")
+    text = strip_invisible(text.replace("\r\n", "\n").replace("\r", "\n").replace(" ", " "))
     lines = [" ".join(line.split()) for line in text.split("\n")]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 

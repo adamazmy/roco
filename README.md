@@ -141,6 +141,12 @@ ROCO never sends, deletes or changes email. Google Calendar keeps working alongs
 
    If the portal says you need a directory or an Azure subscription first, sign up for
    the free Azure account it offers, then come back to this step.
+
+   The app must live in a directory **you own**. If your Microsoft account is also a
+   guest in a university or work directory, check *Settings > Directories +
+   subscriptions* and switch to your own before registering: an app created in an
+   organisation's directory is blocked from reading a personal mailbox (sign-in ends in
+   "first party application... not permitted to consent" or a bare `server_error`).
 2. **Copy the Application (client) ID** from the app's *Overview* page. There is no
    client secret: ROCO is a public client.
 3. **Allow the device code sign-in.** *Authentication* (or *Authentication > Settings*):

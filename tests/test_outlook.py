@@ -516,3 +516,18 @@ def test_doctor_outlook_required_when_provider_outlook(fake_msal, isolated_home)
     results = {r.name: r for r in doctor.run_checks(cfg, OUTLOOK_CHECKS)}
     assert results["Outlook sign-in"].ok
     assert results["Outlook sign-in"].detail == "adam@hotmail.com"
+
+
+def test_invisible_preview_padding_is_stripped():
+    padding = " \u034f" * 20 + " \u200c" * 20 + " \u3164 \u00ad\ufeff"
+    graph = FakeGraph(unread_routes([
+        message("P1", "Debenhams Outlet", "x@y.com", "See what\u2019s waiting for you",
+                "Open up a fresh selection from the outlet." + padding + " Shop now"),
+    ]))
+    line = make_tools(graph).get_unread_emails().splitlines()[1]
+    assert line.endswith(
+        "See what\u2019s waiting for you | Open up a fresh selection from the outlet. Shop now"
+    )
+    tools, _ = read_with({"contentType": "text", "content": "Hello" + padding + "\nBye"})
+    assert body_of(tools.read_email("o1")) == "Hello\nBye"
+    assert o.text.speakable("Café naïve résumé") == "Café naïve résumé"  # real accents stay
