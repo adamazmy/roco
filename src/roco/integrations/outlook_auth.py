@@ -134,6 +134,18 @@ def load_session(cfg: Config) -> OutlookSession:
     return session
 
 
+def _describe_failure(result: dict[str, Any]) -> str:
+    """Every field Microsoft returns on failure, so the cause can be diagnosed."""
+    error = str(result.get("error") or "unknown error")
+    parts = [error]
+    if desc := result.get("error_description"):
+        parts.append(_first_line(str(desc), 300))
+    for key in ("error_codes", "error_uri", "correlation_id", "trace_id"):
+        if value := result.get(key):
+            parts.append(f"{key}={value}")
+    return " | ".join(parts)
+
+
 def _first_line(text: str, limit: int = 160) -> str:
     line = str(text).strip().splitlines()[0] if str(text).strip() else ""
     return line if len(line) <= limit else line[: limit - 3] + "..."
@@ -178,8 +190,7 @@ def run_auth(cfg: Config, *, browser: bool = False) -> int:
         result = session.app.acquire_token_by_device_flow(flow)  # blocks until done or expired
 
     if "access_token" not in result:
-        print("Outlook sign-in failed: "
-              + _first_line(result.get("error_description") or result.get("error") or "unknown"))
+        print(f"Outlook sign-in failed: {_describe_failure(result)}")
         if not browser:
             print("If Microsoft's page refused the code, try: roco auth outlook --browser")
         elif "redirect" in str(result).lower():
