@@ -54,19 +54,38 @@ def _cap_tool_message(
 
 
 def _fetched_when(at: Any, now: datetime | None) -> str:
-    """"at 20:05 today", "on Thursday 19 November at 09:12", or "" if unknown."""
+    """How long ago a tool result was fetched, WITHOUT a clock time: "just now",
+    "about 5 minutes ago", "about 2 hours ago", "yesterday", "on Thursday 19 November".
+
+    A clock time here ("fetched at 11:04") is the first thing a 7B model grabs when
+    asked "what time is it?" later in the conversation, instead of calling the tool.
+    """
     if not isinstance(at, str):
         return ""
     try:
         stamp = datetime.fromisoformat(at)
     except ValueError:
         return ""
-    if now is not None:
-        if now.tzinfo is not None and stamp.tzinfo is not None:
-            stamp = stamp.astimezone(now.tzinfo)
-        if stamp.date() == now.date():
-            return f"at {stamp:%H:%M} today"
-    return f"on {stamp:%A} {stamp.day} {stamp:%B} at {stamp:%H:%M}"
+    if now is None:
+        return f"on {stamp:%A} {stamp.day} {stamp:%B}"
+    if now.tzinfo is not None and stamp.tzinfo is not None:
+        stamp = stamp.astimezone(now.tzinfo)
+    minutes = int((now - stamp).total_seconds() // 60)
+    if stamp.date() == now.date():
+        if minutes < 2:
+            return "just now"
+        if minutes < 60:
+            return f"about {minutes} minutes ago"
+        hours = round(minutes / 60)
+        return f"about {hours} hour{'s' if hours != 1 else ''} ago"
+    if (now.date() - stamp.date()).days == 1:
+        return "yesterday"
+    return f"on {stamp:%A} {stamp.day} {stamp:%B}"
+
+
+# Tools whose old results are only "what the time was": replaying their text invites the
+# model to repeat a stale time, so only the reminder to call them again is kept.
+TIME_ONLY_TOOLS = frozenset({"get_current_time"})
 
 
 class History:
@@ -113,7 +132,12 @@ class History:
                     limit = MAX_TOOL_RESULT_CHARS if index in recent else OLD_TOOL_RESULT_CHARS
                     for t in m["tools"]:
                         t = _cap_tool_message(t, limit)
-                        if t.get("role") == "tool" and when:
+                        if t.get("role") == "tool" and t.get("tool_name") in TIME_ONLY_TOOLS:
+                            t["content"] = (
+                                "(Old result: the time back then. To know the time now, "
+                                "call get_current_time again.)"
+                            )
+                        elif t.get("role") == "tool" and when:
                             t["content"] = (
                                 f"(Old result, fetched {when}. It may be out of date: "
                                 f"call the tool again for current data.) {t.get('content', '')}"

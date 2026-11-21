@@ -382,7 +382,7 @@ def test_next_turn_replays_tag_and_tool_trace(mock, bus, registry):
     sent = mock.requests[2]["messages"][1:]
     assert [m["role"] for m in sent] == ["user", "assistant", "tool", "assistant", "user"]
     assert sent[1]["tool_calls"][0]["function"] == {"name": "add", "arguments": {"a": 1, "b": 2}}
-    assert sent[2]["content"].startswith("(Old result, fetched at ")
+    assert sent[2]["content"].startswith("(Old result, fetched just now.")
     assert sent[2]["content"].endswith(") 3")
     assert sent[3]["content"] == "[happy] Three."
     assert brain.history.messages[1] == {"role": "assistant", "content": "Three."}
