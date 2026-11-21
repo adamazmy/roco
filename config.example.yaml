@@ -21,6 +21,12 @@ llm:
   timeout_s: 120
   max_tool_rounds: 5
 
+cloud:                     # fallback brain on the body when the PC brain is down
+  enabled: true            # needs a key: `roco cloud-key` (stored in ~/.roco/anthropic_key)
+  model: claude-haiku-5-5  # add its price under cloud.pricing if you change it
+  effort: low              # low = fastest first sentence
+  # Every call is logged with tokens + estimated cost: `roco cloud-usage`.
+
 history:
   max_turns: 12            # user+assistant pairs kept in context
   persist: true

@@ -54,6 +54,36 @@ DEFAULTS: dict[str, Any] = {
         "brain_url": "ws://127.0.0.1:8765",
         "token_file": "link_token",  # relative paths live in ~/.roco
     },
+    "cloud": {
+        # Fallback brain on the body when the PC brain is unreachable (roco.fallback,
+        # docs/ROCO_SPEC.md §9): Claude called straight from the body, STT on the body.
+        "enabled": True,
+        "model": "claude-haiku-5-5",
+        "effort": "low",  # low | medium | high: low keeps the first sentence fast
+        "max_tokens": 1024,  # thinking counts towards this; replies are 1-3 sentences
+        "connect_timeout_s": 3.0,
+        "read_timeout_s": 8.0,  # longest silence allowed while streaming
+        "first_text_timeout_s": 10.0,  # give up if no words by then
+        "total_timeout_s": 20.0,  # whole reply, wall clock
+        "max_retries": 1,
+        "history_turns": 6,  # user+assistant pairs kept while on the fallback
+        "api_key_file": "anthropic_key",  # or ANTHROPIC_API_KEY; never in the repo
+        "usage_file": "cloud_usage.jsonl",  # one line per cloud call
+        "stt_model": "tiny.en",  # faster-whisper on the body, loaded on first use
+        # USD per million tokens, for the cost estimate in usage_file. Check
+        # https://claude.com/pricing when you change the model.
+        "pricing": {
+            "claude-haiku-5-5": {
+                "input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125,
+            },
+            "claude-sonnet-5-5": {
+                "input": 2.00, "output": 10.00, "cache_read": 0.10, "cache_write": 2.50,
+            },
+            "claude-opus-5-5": {
+                "input": 4.00, "output": 20.00, "cache_read": 0.20, "cache_write": 5.00,
+            },
+        },
+    },
     "history": {
         "max_turns": 12,
         "persist": True,
