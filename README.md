@@ -141,6 +141,12 @@ ROCO never sends, deletes or changes email. Google Calendar keeps working alongs
 
    If the portal says you need a directory or an Azure subscription first, sign up for
    the free Azure account it offers, then come back to this step.
+
+   The app must live in a directory **you own**. If your Microsoft account is also a
+   guest in a university or work directory, check *Settings > Directories +
+   subscriptions* and switch to your own before registering: an app created in an
+   organisation's directory is blocked from reading a personal mailbox (sign-in ends in
+   "first party application... not permitted to consent" or a bare `server_error`).
 2. **Copy the Application (client) ID** from the app's *Overview* page. There is no
    client secret: ROCO is a public client.
 3. **Allow the device code sign-in.** *Authentication* (or *Authentication > Settings*):
@@ -162,6 +168,12 @@ ROCO never sends, deletes or changes email. Google Calendar keeps working alongs
    ROCO prints a code. Open <https://microsoft.com/devicelogin> in any browser, enter it,
    sign in with your Hotmail address and accept "Read your mail". The token is saved to
    `~/.roco/outlook_token.json`.
+
+   If Microsoft's page refuses the code (for example "The application is a first party
+   application... users are not permitted to consent"), use the browser sign-in instead:
+   in the app registration open *Authentication > Add a platform > Mobile and desktop
+   applications*, add the redirect URI `http://localhost`, save, then run
+   `roco auth outlook --browser`.
 7. **Check:** `roco doctor` should show `Outlook sign-in` as OK. Then ask `roco chat`:
    "any unread emails?".
 
