@@ -54,6 +54,19 @@ DEFAULTS: dict[str, Any] = {
         "brain_url": "ws://127.0.0.1:8765",
         "token_file": "link_token",  # relative paths live in ~/.roco
     },
+    "personality": {
+        # chill | default | unhinged | professional (docs/ROCO_SPEC.md §2.1). Any of
+        # roast, flirt, sass, chattiness, proactivity, energy (0-100) and the switches
+        # sensitive_topics_ok, roast_guests, tone_down_with_guests can be set here too,
+        # over the preset. Changes made by voice ("ROCO, roast level max") are saved in
+        # `file` and win over this section until "ROCO, back to normal".
+        "preset": "default",
+        "file": "personality.json",  # relative paths live in ~/.roco
+        "people_file": "people.json",
+        # Per-person profiles over the built-in ones (Adam, Yousaf), e.g.
+        # {"yousaf": {"overrides": {"roast": 100}}}. See roco.personality.people.
+        "people": {},
+    },
     "history": {
         "max_turns": 12,
         "persist": True,
