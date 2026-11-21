@@ -332,6 +332,8 @@ def reminder_line(s: PersonalitySettings, user: str) -> str:
             "talk like a polished, professional assistant: clear and polite, no jokes, no "
             "teasing, no pet names"
         )
+    elif roast == OFF:
+        tone = "be kind and never tease him"
     else:
         tone = "tease him now and then"
     if flirt >= HIGH:

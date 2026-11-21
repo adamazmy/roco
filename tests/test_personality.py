@@ -96,7 +96,7 @@ def test_prompt_has_roast_and_flirt_examples_for_every_band(level):
 
 def test_prompt_changes_with_settings():
     assert "Savage mode" in prompt_for(roast=100)
-    assert "Never tease or roast Adam" in prompt_for(roast=0)
+    assert "Never tease, mock or roast Adam" in prompt_for(roast=0)
     assert "one short sentence" in prompt_for(chattiness=0)
     assert "Never joke about health" in prompt_for(roast=50)
     assert "Nothing is off-limits" in prompt_for(roast=50, sensitive_topics_ok=True)
@@ -119,7 +119,7 @@ def test_yousaf_rule_in_prompt():
     goose = people.find("yousaf")
     text = render_system_prompt(PromptParts(company=Company(people=(goose,))))
     assert "Never call him Yousaf" in text and "Goose" in text and "Bum" in text
-    assert "Savage mode: roast Goose" in text  # his profile: roast 100
+    assert "no mercy: EVERY reply opens with a brutal, funny roast of Goose" in text
     assert "Never read out Adam's email" in text  # Adam's data stays private
     assert "Yousaf is here" not in text
 
