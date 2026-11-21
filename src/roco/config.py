@@ -44,6 +44,16 @@ DEFAULTS: dict[str, Any] = {
         "timeout_s": 120,
         "max_tool_rounds": 5,
     },
+    "link": {
+        # Brain server <-> body client WebSocket (docs/PROTOCOL.md).
+        # Server side: 0.0.0.0 listens on the LAN and Tailscale; every body must
+        # send the shared token from token_file (copy that file to the Pi).
+        "host": "0.0.0.0",
+        "port": 8765,
+        # Body side: where the brain is. Home LAN or Tailscale address of the PC.
+        "brain_url": "ws://127.0.0.1:8765",
+        "token_file": "link_token",  # relative paths live in ~/.roco
+    },
     "history": {
         "max_turns": 12,
         "persist": True,

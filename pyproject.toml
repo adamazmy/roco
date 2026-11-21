@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "httpx>=0.27",
     "pyyaml>=6.0",
+    "websockets>=13.0",  # brain <-> body link (sync API)
     "tzdata>=2024.1; platform_system == 'Windows'",
 ]
 
@@ -36,6 +37,11 @@ voice = [
     "piper-tts>=1.2.0",
 ]
 face = ["pygame>=2.5"]
+# Phase 3 split. The PC brain server runs STT + TTS; the Pi body client runs the mic,
+# wake word, VAD, playback and face. Workstreams add their libraries (AEC, Kokoro,
+# anthropic) to these lists. `voice` stays as "both", for `roco run` on one machine.
+brain = ["numpy>=1.26", "faster-whisper>=1.0.0", "piper-tts>=1.2.0"]
+body = ["numpy>=1.26", "sounddevice>=0.4.6", "openwakeword>=0.6.0", "onnxruntime>=1.17"]
 google = [
     "google-api-python-client>=2.120",
     "google-auth>=2.28",
