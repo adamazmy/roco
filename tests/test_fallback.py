@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -311,6 +312,46 @@ def test_client_total_timeout(tmp_path):
     with pytest.raises(CloudUnavailableError, match="longer than 20"):
         client.stream_reply("s", [{"role": "user", "content": "x"}], lambda t: None)
     assert read_records(tmp_path / "usage.jsonl")[0]["ok"] is False
+
+
+class StalledStream(FakeStream):
+    """Connects, then never sends a word (what a stalled connection looks like)."""
+
+    def __init__(self, release: threading.Event):
+        super().__init__([], {"input_tokens": 0, "output_tokens": 0})
+        self.release = release
+
+    @property
+    def text_stream(self):
+        self.release.wait(5)
+        return iter(())
+
+
+def test_client_gives_up_when_no_text_arrives(tmp_path):
+    release = threading.Event()
+    client = make_client(tmp_path, FakeSDK(StalledStream(release)), first_text_timeout_s=0.2)
+    t = time.monotonic()
+    try:
+        with pytest.raises(CloudUnavailableError, match="no reply within"):
+            client.stream_reply("s", [{"role": "user", "content": "x"}], lambda t: None)
+    finally:
+        release.set()
+    assert time.monotonic() - t < 2
+    rec = read_records(tmp_path / "usage.jsonl")[0]
+    assert rec["ok"] is False and "no reply" in rec["error"]
+
+
+def test_client_cancel_while_waiting(tmp_path):
+    release = threading.Event()
+    cancel = threading.Event()
+    client = make_client(tmp_path, FakeSDK(StalledStream(release)), first_text_timeout_s=5)
+    threading.Timer(0.1, cancel.set).start()
+    try:
+        reply = client.stream_reply("s", [{"role": "user", "content": "x"}], lambda t: None,
+                                    cancel=cancel)
+    finally:
+        release.set()
+    assert reply.cancelled and reply.text == ""
 
 
 def test_client_without_key_is_permanent_error(tmp_path):
