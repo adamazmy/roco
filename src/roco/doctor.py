@@ -83,6 +83,11 @@ CHECKS: list[Check] = [
     # Google checks (workstream D) are appended below.
 ]
 
+# Workstream B: microphone, speaker, wake word and Piper voice files.
+from roco.voice.checks import VOICE_CHECKS  # noqa: E402  (imports CheckResult from here)
+
+CHECKS += VOICE_CHECKS
+
 
 # --------------------------------------------------------------------------- Google (D)
 # All optional while google.enabled is false, so a text-only setup stays green.
