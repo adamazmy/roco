@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from roco.bus import EventBus
@@ -14,6 +15,48 @@ from roco.config import Config
 from roco.protocol import Connection, memory_pipe
 
 log = logging.getLogger(__name__)
+
+
+def process_rss_mb() -> tuple[float, float] | None:
+    """(current, peak) resident memory of this process in MB, or None if unknown."""
+    try:
+        import psutil
+
+        info = psutil.Process().memory_info()
+        peak = getattr(info, "peak_wset", 0) or info.rss
+        return info.rss / 2**20, peak / 2**20
+    except ImportError:
+        pass
+    if sys.platform.startswith("linux"):
+        try:
+            fields = dict(line.split(":", 1) for line in
+                          Path("/proc/self/status").read_text(encoding="ascii").splitlines())
+            kb = lambda k: float(fields[k].split()[0]) / 1024  # noqa: E731
+            return kb("VmRSS"), kb("VmHWM")
+        except (OSError, KeyError, ValueError):
+            return None
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t)] + [
+                (n, ctypes.c_size_t) for n in ("a", "b", "c", "d", "e", "f")]
+
+        c = Counters()
+        c.cb = ctypes.sizeof(c)
+        proc = ctypes.windll.kernel32.GetCurrentProcess()
+        if ctypes.windll.psapi.GetProcessMemoryInfo(proc, ctypes.byref(c), c.cb):
+            return c.WorkingSetSize / 2**20, c.PeakWorkingSetSize / 2**20
+    return None
+
+
+def _log_rss(when: str) -> None:
+    rss = process_rss_mb()
+    if rss:
+        log.info("Memory %s: %.0f MB resident (peak %.0f MB)", when, *rss)
 
 
 def preflight(cfg: Config) -> str | None:
@@ -52,9 +95,11 @@ def _start(cfg: Config, connect: Callable[[], Connection], face: bool, banner: s
         return 1
     print(banner)
     print(f'Say "{wake_phrase(cfg)}". Press Ctrl+C to quit.')
+    _log_rss("at start")
     try:
         run_with_face(parts.face, parts.client.run)
     finally:
+        _log_rss("at exit")
         parts.close()
     return 0
 

@@ -99,7 +99,7 @@ class BodySettings:
     preroll_frames: int = 4  # sent at the start of speech-triggered turns (320 ms)
     barge_in: BargeInMode = BargeInMode.SPEECH
     barge_threshold: float = 0.6
-    barge_start_ms: float = 160.0
+    barge_start_ms: float = 96.0  # measured 156-220 ms onset->silence on a laptop
     echo_guard_frames: int = 4  # skipped after playback when there is no AEC
     reply_timeout_s: float = 30.0  # no answer at all from the brain: give up
     min_erle_db: float = 10.0  # below this (median, while playing) the AEC is not trusted
@@ -294,14 +294,20 @@ class BodyClient:
     def _step_idle(self, wake: float, scores: list) -> None:
         if self._woke(wake):
             self._cut_announcements("wake")
-            self._start_turn("wake", [], skip_tail=True)
+            self._start_turn("wake", self._wake_preroll(), skip_tail=True)
             return
         if self._announcements and self._barge_detect(wake, scores):
             self._barge_in(None)
 
+    def _wake_preroll(self) -> list[bytes]:
+        """openWakeWord fires a few hundred ms after "Jarvis" ends; a question said in
+        the same breath has already started by then. Send the frames before the wake
+        decision too (the brain strips the wake phrase from the transcript)."""
+        return list(self._preroll)  # ends with the frame the wake word fired on
+
     def _step_followup(self, wake: float, scores: list) -> None:
         if self._woke(wake):
-            self._start_turn("wake", [], skip_tail=True)
+            self._start_turn("wake", self._wake_preroll(), skip_tail=True)
             return
         if self._guard > 0:
             self._guard -= 1
@@ -316,12 +322,15 @@ class BodyClient:
     def _step_recording(self, pcm: bytes, scores: list) -> None:
         rec = self._rec
         assert rec is not None
-        if rec.tail_left > 0:  # still the end of the wake phrase: drop it
+        self._send_mic(rec, pcm)
+        if rec.tail_left > 0:
+            # Possibly still "...Jarvis": send it (the brain strips the wake phrase; it
+            # may also already be the question, said in one breath) but do not let it
+            # start the endpointer, so a pause after the wake word does not end the turn.
             rec.tail_left -= 1
             if any(p >= self.s.endpoint.threshold for p, _ in scores):
                 return
             rec.tail_left = 0
-        self._send_mic(rec, pcm)
         event = rec.endpointer.feed(scores)
         if rec.endpointer.speech_started and rec.endpointer.silence_ms == 0:
             rec.speech_end_t = self.clock()

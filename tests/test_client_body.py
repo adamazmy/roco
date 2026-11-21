@@ -132,7 +132,7 @@ def test_turn_message_order(rig):
     audio = [f for f in sent if isinstance(f, AudioFrame)]
     assert [a.seq for a in audio] == list(range(len(audio)))
     assert all(a.turn == 1 and a.rate == 16000 for a in audio)
-    assert len(audio) == 1 + 5 + 6  # wake tail dropped; speech; trailing silence
+    assert len(audio) == 1 + 1 + 5 + 6  # wake frame; wake tail; speech; silence
     end = sent[-1]
     assert isinstance(end, TurnEnd) and end.reason == "silence"
     assert end.trailing_ms == 480  # 6 x 80 ms >= 450 ms
@@ -350,7 +350,7 @@ def test_link_down_turn_goes_to_the_fallback_and_is_spoken_locally():
     try:
         r.user_turn()
         assert wait_for(lambda: fb.calls)
-        assert fb.calls[0] == (12 * 2560, 16000)  # every frame of the utterance
+        assert fb.calls[0] == (13 * 2560, 16000)  # every frame of the utterance
         assert wait_for(lambda: r.player.playing)
         r.play(0.5)
         assert r.body.mode is Mode.FOLLOWUP
@@ -389,3 +389,38 @@ def test_barge_in_over_a_fallback_reply_cancels_it():
         gate.set()
     finally:
         r.close()
+
+
+def test_question_said_in_one_breath_with_the_wake_word_is_not_clipped(rig):
+    # Hardware test 2026-11-21: "Hey Jarvis what's on today" was heard as "on today".
+    rig.mic(WAKE)
+    rig.mic(SPEECH, 5)  # no pause after the wake word
+    rig.mic(QUIET, 6)
+    sent = rig.sent()
+    audio = [f for f in sent if isinstance(f, AudioFrame)]
+    assert len(audio) == 1 + 5 + 6  # every frame from the wake word on goes up
+    assert isinstance(sent[-1], TurnEnd) and sent[-1].reason == "silence"
+
+
+def test_pause_after_the_wake_word_does_not_end_the_turn(rig):
+    rig.mic(WAKE)
+    rig.mic(QUIET, 10)  # 0.8 s pause, longer than trailing_ms
+    assert rig.body.mode is Mode.RECORDING
+    rig.mic(SPEECH, 5)
+    rig.mic(QUIET, 6)
+    assert rig.sent()[-1].reason == "silence"
+
+
+def test_audio_just_before_the_wake_decision_is_sent(rig):
+    # openWakeWord fires late: the frames before the decision may hold the question.
+    rig.mic(SPEECH, 3)  # "...Jarvis, tell me" before the detector fires
+    rig.mic(WAKE)
+    rig.mic(QUIET, 60)
+    audio = [f for f in rig.sent() if isinstance(f, AudioFrame)]
+    assert [abs(array_level(f.pcm)) for f in audio[:4]] == [SPEECH, SPEECH, SPEECH, WAKE]
+
+
+def array_level(pcm: bytes) -> int:
+    from array import array
+
+    return array("h", pcm)[1]

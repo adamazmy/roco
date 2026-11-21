@@ -52,7 +52,7 @@ def body_settings(cfg: Config) -> Any:
         wake_threshold=float(cfg.get_path("voice.wake_word.threshold", 0.5)),
         barge_in=BargeInMode(str(barge.get("mode", "speech"))),
         barge_threshold=float(barge.get("threshold", 0.6)),
-        barge_start_ms=float(barge.get("start_ms", 160)),
+        barge_start_ms=float(barge.get("start_ms", 96)),
         min_erle_db=float(cfg.get_path("voice.aec.min_erle_db", 10.0)),
     )
 
@@ -141,7 +141,7 @@ def build_body(
         player = Player(rate=int(cfg.get_path("voice.playback.rate", 22050)))
         out_device = find_device(cfg.get_path("voice.output_device"), "output")
         output = CallbackOutput(player, out_device, reference,
-                                latency=cfg.get_path("voice.playback.latency", "low"))
+                                latency=cfg.get_path("voice.playback.latency", 0.05))
         output.start()
         parts.closers.append(output)
 

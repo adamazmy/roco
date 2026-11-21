@@ -95,11 +95,13 @@ DEFAULTS: dict[str, Any] = {
         "barge_in": {
             "mode": "speech",  # speech (any speech, needs AEC) | wake_word | off
             "threshold": 0.6,
-            "start_ms": 160,
+            "start_ms": 96,  # speech needed before ROCO stops (hardware test: 156-220 ms)
         },
         "playback": {
             "rate": 22050,  # reopened at the brain's tts_rate on connect
-            "latency": "low",  # PortAudio output latency: low | high | seconds
+            # PortAudio output latency (seconds, or low | high). Part of the barge-in
+            # stop time; raise it if ROCO's voice crackles.
+            "latency": 0.05,
         },
         "stt": {
             "model": "base.en",
