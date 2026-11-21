@@ -33,7 +33,9 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
 
 def cmd_chat(args: argparse.Namespace, cfg: Config) -> int:
     """Text mode: keyboard in, printed sentences out."""
-    return _not_implemented("roco chat", "A")
+    from roco.brain.chat import run_chat
+
+    return run_chat(args, cfg)
 
 
 def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
