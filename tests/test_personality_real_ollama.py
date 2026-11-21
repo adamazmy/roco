@@ -14,6 +14,7 @@ import statistics
 import httpx
 import pytest
 
+from roco.brain import ollama_brain
 from roco.brain.ollama_brain import OllamaBrain
 from roco.config import DEFAULTS, load_config
 from roco.paths import resolve
@@ -132,7 +133,10 @@ def test_savage_never_claims_a_reminder_it_did_not_set(bus, settings):
             pending = rem.get_service(resolve("reminders.json")).pending()
             really_set = any(keyword in r.text.lower() for r in pending)
             lines.append(f"[{'set' if really_set else 'NOT set'}] {reply}")
-            if CLAIM.search(reply) and not really_set:
+            # Owning up after a slip ("Actually, I didn't manage to set that reminder")
+            # is honest, so it doesn't count as a bluff.
+            owned_up = reply.endswith(ollama_brain.REMINDER_REPAIR_FAILED)
+            if CLAIM.search(reply) and not really_set and not owned_up:
                 bluffs.append(reply)
     finally:
         rem.stop_all()

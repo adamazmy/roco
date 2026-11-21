@@ -46,7 +46,17 @@ _TERMINAL = ".!?…"
 _CLAUSE_BREAKS = ",;"
 CLAUSE_MIN_CHARS = 60
 # What the brain uses for the first chunk of a reply (see the module docstring).
-FIRST_CLAUSE_MIN_CHARS = 24
+FIRST_CLAUSE_MIN_CHARS = 12
+# First chunk only: a long opening with no comma ("It's twenty past ten at night on a
+# chilly Saturday.") is cut before a joining word, so the voice can start on a short
+# phrase while the rest is synthesized. Measured on Cori: ~0.15 s for a short phrase vs
+# 0.6-1.2 s for a 60-character sentence.
+FIRST_PHRASE_MIN_CHARS = 30
+_FIRST_PHRASE_WORDS = (
+    "and", "but", "so", "because", "which", "that", "while", "when", "if",
+    "at", "on", "in", "with", "for", "from", "after", "before",
+)
+_FIRST_PHRASE = re.compile(r" (?=(?:" + "|".join(_FIRST_PHRASE_WORDS) + r") )")
 _CLOSERS = "\"'”’)]}»"
 # Any known emotion tag anywhere in a sentence, e.g. a model repeating "[happy]" mid-reply.
 _INLINE_TAG = re.compile(
@@ -129,6 +139,12 @@ class SentenceSplitter:
         for i in range(max(minimum - 1, 0), len(buf) - 1):
             if buf[i] in _CLAUSE_BREAKS and buf[i + 1] in " 	":
                 return i + 1
+        if not self._released and self.first_clause_min_chars is not None:
+            # The lookahead needs the space after the joining word, so "an" never
+            # passes for "and" while tokens are still arriving.
+            m = _FIRST_PHRASE.search(buf, FIRST_PHRASE_MIN_CHARS)
+            if m is not None:
+                return m.start()
         return None
 
     def _find_boundary(self) -> int | None:

@@ -212,8 +212,24 @@ def create_brain_context(
         brain_name=brain_name,
         fillers=fillers,
         latency_path=resolve(latency) if latency else None,
-        llm_preload=preload,  # still loading in the background: see wait_until_ready
+        llm_preload=_then_warm_up(preload, brain),  # see wait_until_ready
     )
+
+
+def _then_warm_up(preload: threading.Thread | None, brain: Brain) -> threading.Thread | None:
+    """After the model load, one chat with the real prompt (``OllamaBrain.warm_up``), so
+    Adam's first question isn't the slow one. ``wait_until_ready`` waits for both."""
+    warm = getattr(brain, "warm_up", None)
+    if preload is None or not callable(warm):
+        return preload
+
+    def run() -> None:
+        preload.join()
+        warm()
+
+    thread = threading.Thread(target=run, name="roco-llm-warm-up", daemon=True)
+    thread.start()
+    return thread
 
 
 def _load_speech(

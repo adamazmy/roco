@@ -26,6 +26,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -39,7 +40,7 @@ from roco.bus import Emotion, EventBus, State
 from roco.config import Config
 from roco.paths import resolve
 from roco.personality import Personality
-from roco.tools.clock import describe_date, local_timezone
+from roco.tools.clock import describe_date, local_timezone, part_of_day
 from roco.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,22 @@ TIME_QUESTION = re.compile(
     r"|the\s+time\s+now|current\s+time)\b",
     re.IGNORECASE,
 )
+# A reminder request answered with "I'll set it" but no set_reminder call: qwen2.5 does
+# this in savage/unhinged mode (the joke crowds out the tool call). Spec §2 hard rule:
+# never claim an action that didn't happen, so the brain repairs it (see _repair_reminder).
+REMINDER_REQUEST = re.compile(r"\b(remind\s+me|reminder)\b", re.IGNORECASE)
+ACTION_CLAIM = re.compile(
+    r"\b(i'?ve|i\s+have|i'?ll|i\s+will|all)\s+(set|added|created|scheduled|sorted|done)\b"
+    r"|\breminder(?:'s|\s+is)?\s+(set|added|created|scheduled)\b|\bdone\b"
+    r"|\bi'?ll\s+remind\s+you\b|\bgot\s+it\b|\bconsider\s+it\b",
+    re.IGNORECASE,
+)
+REMINDER_REPAIR_NOTE = (
+    "(Note from the system, not from {user}: you said you'd set that reminder but you "
+    "didn't call set_reminder. Call set_reminder now with the details {user} gave: "
+    "minutes_from_now for \"in ten minutes\", at for a clock time like \"at six\".)"
+)
+REMINDER_REPAIR_FAILED = "Actually, I didn't manage to set that reminder. Ask me again?"
 APOLOGY_TANGLED = "Sorry, I got a bit tangled up there. Could you ask me that again?"
 
 
@@ -281,9 +298,36 @@ class OllamaBrain(Brain):
             if not reply.sentences:
                 log.warning("[turn %d] Model returned no text", turn)
                 return self._apologise(reply, APOLOGY_TANGLED)
+            if self._claims_unset_reminder(text, reply.text, trace):
+                try:
+                    trace = trace + self._repair_reminder(messages, reply, turn, ctl)
+                except _Cancelled:
+                    pass
+                except OllamaError as exc:
+                    log.warning("[turn %d] reminder repair failed: %s", turn, exc)
+                    reply.say(REMINDER_REPAIR_FAILED)
             emotion = reply.first_emotion.value if reply.first_emotion else None
             self.history.add_turn(text, reply.text, emotion, trace, at=started)
             return reply.text
+
+    def warm_up(self) -> bool:
+        """Send the real system prompt and tools once, before Adam's first question.
+
+        Measured on the RTX 3060 laptop: right after a load, the first chat took 4.6 s to
+        its first token, later ones ~1 s (prompt processing of ~1,700 tokens + GPU warm-up).
+        Ollama then reuses the cached prompt prefix. Best effort: False on failure.
+        """
+        allowed = self.personality.allowed_tool
+        tools = [s for s in self.registry.schemas() if allowed(s["function"]["name"])] or None
+        messages = [self._system_message(), {"role": "user", "content": "Hi."}]
+        try:
+            t0 = time.monotonic()
+            self.client.warm_up(messages, tools)
+        except OllamaError as exc:
+            log.warning("LLM warm-up failed: %s", exc)
+            return False
+        log.info("LLM warmed up in %d ms", (time.monotonic() - t0) * 1000)
+        return True
 
     def amend_last_reply(self, heard: str) -> None:
         with self._lock:
@@ -297,6 +341,36 @@ class OllamaBrain(Brain):
         self.client.close()
 
     # ------------------------------------------------------------------ internals
+    def _claims_unset_reminder(
+        self, text: str, said: str, trace: list[dict[str, Any]]
+    ) -> bool:
+        if "set_reminder" not in self.registry or not REMINDER_REQUEST.search(text):
+            return False
+        if not ACTION_CLAIM.search(said):
+            return False
+        return not _tool_succeeded(trace, "set_reminder")
+
+    def _repair_reminder(
+        self, messages: list[dict[str, Any]], reply: _Reply, turn: int, ctl: _Turn
+    ) -> list[dict[str, Any]]:
+        """Make an "I'll set it" true: one silent tool round asking for set_reminder.
+
+        Nothing from the repair round is spoken; if the reminder still isn't set, ROCO
+        owns up. Only the tool call and its result are kept for the history.
+        """
+        log.warning("[turn %d] claimed a reminder without set_reminder; repairing", turn)
+        repair = [
+            *messages,
+            {"role": "assistant", "content": reply.text},
+            {"role": "user", "content": REMINDER_REPAIR_NOTE.format(user=self._user_name())},
+        ]
+        silent = _Reply(self.bus, None, ctl.cancel)
+        done = self._converse(repair, silent, turn, ctl)
+        kept = [m for m in done if m.get("tool_calls") or m.get("role") == "tool"]
+        if not _tool_succeeded(kept, "set_reminder"):
+            reply.say(REMINDER_REPAIR_FAILED)
+        return kept
+
     def _prefetch_time(self, text: str, turn: int) -> list[dict[str, Any]]:
         """For a plain "what time is it?", call get_current_time before the model does.
 
@@ -322,9 +396,14 @@ class OllamaBrain(Brain):
             str(assistant.get("name", "ROCO")), self._user_name()
         )
         now = self._clock()
-        # Date only: the exact time comes from get_current_time, whose answer is spoken-style
-        # (a 7B model misreads "19:58" as "half past seven" when it is in the prompt).
-        prompt += f"\n\nToday is {describe_date(now)}."
+        # Date and part of day only: the exact time comes from get_current_time, whose answer
+        # is spoken-style (a 7B model misreads "19:58" as "half past seven" when it is in the
+        # prompt). The part of day stops "Morning, Adam" at half ten at night and invented
+        # "it's three in the morning" lines.
+        prompt += (
+            f"\n\nToday is {describe_date(now)}, and it's {part_of_day(now)}. Match greetings "
+            "and your mood to that. For the exact time, call get_current_time."
+        )
         return {"role": "system", "content": prompt}
 
     def _user_name(self) -> str:
@@ -513,6 +592,15 @@ def _call_parts(call: Any) -> tuple[str | None, dict[str, Any] | str | None]:
     if not isinstance(name, str) or not name.strip():
         return None, None
     return name.strip(), function.get("arguments")
+
+
+def _tool_succeeded(messages: list[dict[str, Any]], name: str) -> bool:
+    return any(
+        m.get("role") == "tool"
+        and m.get("tool_name") == name
+        and not str(m.get("content", "")).startswith(("Error", "Cancelled"))
+        for m in messages
+    )
 
 
 def _sanitize_call(call: Any) -> dict[str, Any]:

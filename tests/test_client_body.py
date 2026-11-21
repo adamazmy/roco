@@ -352,8 +352,15 @@ def test_link_down_turn_goes_to_the_fallback_and_is_spoken_locally():
         assert wait_for(lambda: fb.calls)
         assert fb.calls[0] == (13 * 2560, 16000)  # every frame of the utterance
         assert wait_for(lambda: r.player.playing)
-        r.play(0.5)
-        assert r.body.mode is Mode.FOLLOWUP
+        # The fallback thread may still be finishing the reply when playback starts: keep
+        # playing (in real time, so that thread can run) until the reply has all been heard.
+        # A single 0.5 s step raced, ~50 % of runs on Windows.
+
+        def heard_all():
+            r.play(0.1)
+            return r.body.mode is Mode.FOLLOWUP
+
+        assert wait_for(heard_all)
         assert r.body.stats["turns"][-1]["local"] is True
     finally:
         r.close()

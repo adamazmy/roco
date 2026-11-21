@@ -78,6 +78,18 @@ class OllamaClient:
             payload["keep_alive"] = self.keep_alive
         return payload
 
+    def warm_up(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> None:
+        """One non-streamed, one-token chat. Raises :class:`OllamaError` on failure."""
+        payload = self.build_payload(messages, tools)
+        payload["stream"] = False
+        payload.setdefault("options", {})["num_predict"] = 1  # runtime option: no reload
+        try:
+            self._http.post("/api/chat", json=payload).raise_for_status()
+        except httpx.HTTPError as exc:
+            raise OllamaError("unreachable", f"warm-up failed: {exc}") from exc
+
     def stream_chat(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
     ) -> Iterator[dict[str, Any]]:

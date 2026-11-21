@@ -301,3 +301,17 @@ def test_old_clock_answers_are_not_replayed(tmp_path):
             if m["role"] == "tool"][0]
     assert "11:04" not in tool["content"] and "eleven" not in tool["content"]
     assert "call get_current_time again" in tool["content"]
+
+
+def test_part_of_day_boundaries():
+    from datetime import datetime
+
+    from roco.tools.clock import part_of_day
+
+    def at(h):
+        return part_of_day(datetime(2026, 11, 21, h, 30))
+
+    assert [at(h) for h in (4, 5, 11, 12, 16, 17, 21, 22, 23)] == [
+        "night", "morning", "morning", "afternoon", "afternoon", "evening", "evening",
+        "night", "night",
+    ]
