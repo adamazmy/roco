@@ -15,6 +15,8 @@ htmlcov/
 config.yaml
 .roco/
 *token*.json
+anthropic_key
+*_key
 *credentials*.json
 client_secret*.json
 history.json

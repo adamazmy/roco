@@ -1,0 +1,28 @@
+# ROCO body client, as a systemd *user* service (so it joins the user's PipeWire/ALSA
+# session for the USB mic and speaker). Installed by scripts/pi_setup.sh into
+# ~/.config/systemd/user/roco-body.service with @REPO@ and @VENV@ filled in;
+# `loginctl enable-linger` makes it start at boot without anyone logging in.
+#
+#   systemctl --user status roco-body      # is it running?
+#   journalctl --user -u roco-body -f      # live logs
+#   systemctl --user restart roco-body     # after a git pull or a config change
+
+[Unit]
+Description=ROCO body client (mic, wake word, playback, face, servos)
+# User units cannot wait for network-online.target; the body client retries the link
+# by itself and falls back to the cloud/canned brain meanwhile.
+After=pipewire.service wireplumber.service
+# Never stop retrying while e.g. a USB device is unplugged.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+ExecStart=@VENV@/bin/roco body
+# Never give up: a crash, a missing USB device or a brain outage just restarts it.
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

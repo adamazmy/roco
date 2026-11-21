@@ -55,8 +55,12 @@ google = [
     "google-auth-httplib2>=0.2",
 ]
 outlook = ["msal>=1.28"]
+# Fallback brain on the body (roco.fallback): Claude + whisper tiny.en for STT.
+cloud = ["anthropic>=2.0", "numpy>=1.26", "faster-whisper>=1.0.0"]
 pi = ["adafruit-circuitpython-servokit>=1.3"]
-dev = ["pytest>=8.0", "pytest-timeout>=2.3", "ruff>=0.5"]
+# anthropic: so CI runs the Claude client tests against the real SDK over a mocked
+# HTTP transport (no network). It is pure Python and light.
+dev = ["pytest>=8.0", "pytest-timeout>=2.3", "ruff>=0.5", "anthropic>=2.0"]
 # Everything you want on the Windows "brain" PC. `pi` is deliberately excluded.
 all = ["roco[voice,face,google,outlook,dev]"]
 
