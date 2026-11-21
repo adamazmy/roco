@@ -27,10 +27,21 @@ def _not_implemented(feature: str, workstream: str) -> int:
 
 
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
-    """Full voice loop: wake word -> STT -> brain -> TTS, with face and servos."""
-    from roco.voice.app import run_voice
+    """Brain + body in one process (joined by memory_pipe), with face and servos."""
+    if getattr(args, "legacy", False):
+        from roco.voice.app import run_voice  # Phase 2 single-loop pipeline
 
-    return EXIT_OK if run_voice(cfg) == 0 else EXIT_FAIL
+        return EXIT_OK if run_voice(cfg) == 0 else EXIT_FAIL
+    from roco.client.app import run_local
+
+    return EXIT_OK if run_local(cfg, face=not args.no_face) == 0 else EXIT_FAIL
+
+
+def cmd_body(args: argparse.Namespace, cfg: Config) -> int:
+    """The robot side: mic, wake word, VAD, AEC, playback, face; talks to `roco brain`."""
+    from roco.client.app import run_body
+
+    return EXIT_OK if run_body(cfg, url=args.url, face=not args.no_face) == 0 else EXIT_FAIL
 
 
 def cmd_brain(args: argparse.Namespace, cfg: Config) -> int:
@@ -114,7 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(func=func)
         return p
 
-    add("run", cmd_run, "run the full voice assistant (wake word, speech, face)")
+    run = add("run", cmd_run, "run the full voice assistant: brain + body in one process")
+    run.add_argument("--no-face", action="store_true", help="no face window")
+    run.add_argument("--legacy", action="store_true",
+                     help="the Phase 2 single-loop pipeline (no barge-in)")
+
+    body = add("body", cmd_body, "run the robot body and connect to a brain server")
+    body.add_argument("--url", help="brain WebSocket URL (default: link.brain_url)")
+    body.add_argument("--no-face", action="store_true", help="no face window")
 
     brain = add("brain", cmd_brain, "run the brain server the body connects to (PC)")
     brain.add_argument("--host", help="listen address (default: link.host)")

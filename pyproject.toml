@@ -35,13 +35,19 @@ voice = [
     "onnxruntime>=1.17",
     "faster-whisper>=1.0.0",
     "piper-tts>=1.2.0",
+    "livekit>=1.0",  # WebRTC AEC for barge-in in `roco run` (docs/AEC.md)
 ]
 face = ["pygame>=2.5"]
 # Phase 3 split. The PC brain server runs STT + TTS; the Pi body client runs the mic,
 # wake word, VAD, playback and face. Workstreams add their libraries (AEC, Kokoro,
 # anthropic) to these lists. `voice` stays as "both", for `roco run` on one machine.
 brain = ["numpy>=1.26", "faster-whisper>=1.0.0", "piper-tts>=1.2.0"]
-body = ["numpy>=1.26", "sounddevice>=0.4.6", "openwakeword>=0.6.0", "onnxruntime>=1.17"]
+# livekit = WebRTC AudioProcessingModule (AEC3) for barge-in, see docs/AEC.md.
+# piper-tts = local voice for fallback replies (loaded only when the brain is down).
+body = [
+    "numpy>=1.26", "sounddevice>=0.4.6", "openwakeword>=0.6.0", "onnxruntime>=1.17",
+    "livekit>=1.0", "piper-tts>=1.2.0",
+]
 google = [
     "google-api-python-client>=2.120",
     "google-auth>=2.28",

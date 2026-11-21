@@ -106,3 +106,18 @@ Heavy work runs on the PC; the Pi 5 (2 GB) is the body only.
 The brain stays the `Brain` interface (`respond(text, on_sentence)`); the server wraps it.
 The body client decides the end of speech, cuts playback on barge-in locally, then tells the
 brain. When the brain link is down, the body asks the fallback chain instead.
+
+### Body client (`roco.client`)
+
+| Module | Role |
+|---|---|
+| `link.LinkClient` | One thread: connect (injected), `hello` → `welcome`, receive loop, ping every 5 s (RTT, liveness), reconnect with jittered backoff 0.5 s → 10 s. |
+| `body.BodyClient` | Mic state machine (idle → recording → reply → follow-up), turn messages, barge-in, late-frame dropping, fallback hook, per-turn metrics. |
+| `playback.Player` / `CallbackOutput` | TTS frames per turn, pulled by a PortAudio callback: instant local cut, exact AEC reference, "heard" text, mouth level. |
+| `vad` | Silero VAD v5 on onnxruntime (no torch), energy fallback, `VadEndpointer` (450 ms trailing silence). |
+| `roco.voice.aec` | WebRTC AEC3 / Speex / none behind one protocol; see [`docs/AEC.md`](AEC.md). |
+| `factory` / `app` | Real components from config; `roco body` (WebSocket) and `roco run` (`memory_pipe` + `roco.server.serve_connection`, a fresh pipe per connection). |
+
+Threads: mic (state machine), link (incoming frames), player monitor (playback
+events, mouth), PortAudio callbacks, and a fallback worker while the brain is down.
+All body state is behind one lock; the audio callback only copies bytes.

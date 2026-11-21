@@ -35,10 +35,21 @@ voice:
   wake_word:
     model: hey_jarvis
     threshold: 0.5
-  recording:
-    silence_s: 0.9         # stop recording after this much silence
+  recording:               # roco run --legacy only (Phase 2 energy endpointing)
+    silence_s: 0.9
     max_s: 15
   followup_s: 5            # talk again without the wake word within this window
+  vad:                     # roco body / roco run: end of speech is decided on the body
+    engine: silero         # silero | energy
+    trailing_ms: 450       # silence that ends your turn; raise it if ROCO cuts you off
+  aec:
+    engine: auto           # auto | webrtc | speex | none (see docs/AEC.md)
+    min_erle_db: 10        # weaker echo cancellation -> barge-in needs the wake word
+  barge_in:
+    mode: speech           # speech (interrupt by talking) | wake_word | off
+    start_ms: 96           # speech needed before ROCO stops talking
+  playback:
+    latency: 0.05          # seconds; raise to 0.1 if ROCO's voice crackles
   stt:
     model: base.en
     device: cpu            # or cuda
