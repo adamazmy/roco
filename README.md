@@ -54,12 +54,13 @@ processing stays on your machine.
 
 | Command | What it does |
 |---|---|
-| `roco run` | Full voice loop with face and (simulated) servos |
+| `roco run [--no-face] [--legacy]` | Brain + body in one process: voice, barge-in, face, (simulated) servos |
+| `roco body [--url ws://pc:8765] [--no-face]` | The robot side only (Pi or PC), talking to a brain server |
 | `roco chat [--speak] [--face] [--reset]` | Text chat |
 | `roco doctor` | Checks Ollama, the model, audio devices, model files and extras |
 | `roco auth google` | Connects Google Calendar + Gmail (read-only) |
 | `roco auth outlook` | Connects Outlook.com / Hotmail email (read-only) |
-| `roco download-models` | Downloads openWakeWord models and the Piper voice |
+| `roco download-models` | Downloads openWakeWord models, Silero VAD, the Piper voice and whisper |
 | `roco demo-face` | Cycles the face through every emotion |
 
 Global options: `-c/--config PATH`, `-v/--verbose`.

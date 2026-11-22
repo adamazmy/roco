@@ -20,6 +20,10 @@ Long sentences are released clause by clause: once the pending text is at least
 A spoken list ("you have the dentist at ten, lunch with Sam at one, and...") would
 otherwise keep the voice silent until the whole list has been generated. Commas
 inside numbers ("10,000") are never followed by a space, so they never split.
+
+``first_clause_min_chars`` (shorter) applies to the very first chunk of a stream only:
+the first chunk is what the listener waits for, and TTS time grows with its length, so
+"Today you have a gym session," is released before "from eight to nine in the morning".
 """
 
 from __future__ import annotations
@@ -41,6 +45,18 @@ ABBREVIATIONS = frozenset(
 _TERMINAL = ".!?…"
 _CLAUSE_BREAKS = ",;"
 CLAUSE_MIN_CHARS = 60
+# What the brain uses for the first chunk of a reply (see the module docstring).
+FIRST_CLAUSE_MIN_CHARS = 12
+# First chunk only: a long opening with no comma ("It's twenty past ten at night on a
+# chilly Saturday.") is cut before a joining word, so the voice can start on a short
+# phrase while the rest is synthesized. Measured on Cori: ~0.15 s for a short phrase vs
+# 0.6-1.2 s for a 60-character sentence.
+FIRST_PHRASE_MIN_CHARS = 30
+_FIRST_PHRASE_WORDS = (
+    "and", "but", "so", "because", "which", "that", "while", "when", "if",
+    "at", "on", "in", "with", "for", "from", "after", "before",
+)
+_FIRST_PHRASE = re.compile(r" (?=(?:" + "|".join(_FIRST_PHRASE_WORDS) + r") )")
 _CLOSERS = "\"'”’)]}»"
 # Any known emotion tag anywhere in a sentence, e.g. a model repeating "[happy]" mid-reply.
 _INLINE_TAG = re.compile(
@@ -54,8 +70,40 @@ _STAGE_DIRECTION = re.compile(r"\s*\[\s*[A-Za-z][A-Za-z0-9_ '\-]{0,30}\]\s*")
 # ("Here they are: - From Kiwi.com ... - From UNiDAYS ..."). A hyphen between words or
 # numbers ("ten - fifteen") is left alone.
 _BULLET = re.compile(r"(^|[:.!?]\s*)\s*(?:[-*•]|\d{1,2}[.)])\s+")
+# Emoji and pictographs: the persona forbids them, but qwen2.5 still adds the odd "😴",
+# which Piper reads out or garbles.
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿️‍]+")
 _SPACES = re.compile(r"[ \t]+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,!?;:])")
+
+
+_CLOCK = re.compile(r"(?<![\d:.])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])")
+_DAY_PART = re.compile(r"\b(?:in the (?:morning|afternoon|evening)|at night|midnight|midday)\b",
+                       re.IGNORECASE)
+
+
+def say_clock_times(text: str) -> str:
+    """"10:00 to 10:15" -> "ten o'clock to quarter past ten".
+
+    The tools already give times in words, but qwen2.5 sometimes rewrites them as digits
+    (seen live reading the calendar), which Piper reads badly. If the sentence already
+    says the part of day, it isn't repeated after every time.
+    """
+    if not _CLOCK.search(text):
+        return text
+    from datetime import datetime
+
+    from roco.tools.clock import spoken_time
+
+    keep_part = not _DAY_PART.search(text)
+
+    def spoken(m: re.Match[str]) -> str:
+        phrase = spoken_time(datetime(2000, 1, 1, int(m.group(1)), int(m.group(2))))
+        if not keep_part and phrase not in ("midnight", "midday"):
+            phrase = _DAY_PART.sub("", phrase).strip()
+        return phrase
+
+    return _CLOCK.sub(spoken, text)
 
 
 def clean_sentence(text: str) -> str:
@@ -67,6 +115,8 @@ def clean_sentence(text: str) -> str:
     text = _INLINE_TAG.sub(" ", text)
     text = _STAGE_DIRECTION.sub(" ", text)
     text = _BULLET.sub(r"\1 ", text.strip())
+    text = _EMOJI.sub(" ", text)
+    text = say_clock_times(text)
     text = text.replace("*", "").replace(" | ", ", ").replace("|", " ")
     text = _SPACE_BEFORE_PUNCT.sub(r"\1", _SPACES.sub(" ", text))
     return text.strip()
@@ -75,10 +125,17 @@ def clean_sentence(text: str) -> str:
 class SentenceSplitter:
     """Feed chunks with :meth:`feed`; get complete sentences back. Call :meth:`flush` at the end."""
 
-    def __init__(self, clause_min_chars: int | None = CLAUSE_MIN_CHARS) -> None:
-        """``clause_min_chars=None`` turns clause splitting off (whole sentences only)."""
+    def __init__(
+        self,
+        clause_min_chars: int | None = CLAUSE_MIN_CHARS,
+        first_clause_min_chars: int | None = None,
+    ) -> None:
+        """``clause_min_chars=None`` turns clause splitting off (whole sentences only).
+        ``first_clause_min_chars`` overrides it for the first chunk (None = the same)."""
         self._buf = ""
         self.clause_min_chars = clause_min_chars
+        self.first_clause_min_chars = first_clause_min_chars
+        self._released = False
 
     def feed(self, chunk: str) -> list[str]:
         if not chunk:
@@ -95,6 +152,7 @@ class SentenceSplitter:
             self._buf = self._buf[cut:].lstrip()
             if sentence:
                 out.append(sentence)
+                self._released = True
         return out
 
     def flush(self) -> str | None:
@@ -106,12 +164,21 @@ class SentenceSplitter:
     # ------------------------------------------------------------------ internals
     def _find_clause(self) -> int | None:
         """Index just after a clause break in a long unfinished sentence, or None."""
-        if self.clause_min_chars is None:
+        minimum = self.clause_min_chars
+        if not self._released and self.first_clause_min_chars is not None:
+            minimum = self.first_clause_min_chars
+        if minimum is None:
             return None
         buf = self._buf
-        for i in range(max(self.clause_min_chars - 1, 0), len(buf) - 1):
+        for i in range(max(minimum - 1, 0), len(buf) - 1):
             if buf[i] in _CLAUSE_BREAKS and buf[i + 1] in " 	":
                 return i + 1
+        if not self._released and self.first_clause_min_chars is not None:
+            # The lookahead needs the space after the joining word, so "an" never
+            # passes for "and" while tokens are still arriving.
+            m = _FIRST_PHRASE.search(buf, FIRST_PHRASE_MIN_CHARS)
+            if m is not None:
+                return m.start()
         return None
 
     def _find_boundary(self) -> int | None:

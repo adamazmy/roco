@@ -54,6 +54,29 @@ DEFAULTS: dict[str, Any] = {
         "brain_url": "ws://127.0.0.1:8765",
         "token_file": "link_token",  # relative paths live in ~/.roco
     },
+    "server": {
+        # Brain server (roco brain / roco run). One JSON line per turn, in ~/.roco.
+        "latency_log": "latency.jsonl",
+        # Stripped from the start of voice transcripts, besides the wake word's own phrase
+        # (the body's pre-roll catches it). Whisper's mishearings of "hey Jarvis".
+        "wake_aliases": ["hey george"],
+        "tts_frame_ms": 80,  # TTS audio block size sent to the body (50-100 ms)
+        "filler": {
+            # Said at once when a slow tool is about to run and nothing was said yet.
+            "enabled": True,
+            "lines": ["Let me check.", "One moment.", "Let me have a look."],
+            # Tools fast enough to need no filler line.
+            "fast_tools": ["get_current_time", "set_reminder", "list_reminders",
+                           "cancel_reminder"],
+        },
+        # Streaming STT (roco.server.stt): decode while Adam is still talking.
+        "stt": {
+            "speculative_quiet_ms": 240,
+            "partial_min_s": 3.0,
+            "partial_every_s": 1.0,
+            "keep_tail_s": 1.0,
+        },
+    },
     "personality": {
         # chill | default | unhinged | professional (docs/ROCO_SPEC.md §2.1). Any of
         # roast, flirt, sass, chattiness, proactivity, energy (0-100) and the switches
@@ -66,6 +89,70 @@ DEFAULTS: dict[str, Any] = {
         # Per-person profiles over the built-in ones (Adam, Yousaf), e.g.
         # {"yousaf": {"overrides": {"roast": 100}}}. See roco.personality.people.
         "people": {},
+    },
+    "cloud": {
+        # Fallback brain on the body when the PC brain is unreachable (roco.fallback,
+        # docs/ROCO_SPEC.md §9): Claude called straight from the body, STT on the body.
+        "enabled": True,
+        "model": "claude-haiku-5-5",
+        "effort": "low",  # low | medium | high: low keeps the first sentence fast
+        "max_tokens": 1024,  # thinking counts towards this; replies are 1-3 sentences
+        "connect_timeout_s": 3.0,
+        "read_timeout_s": 8.0,  # longest silence allowed while streaming
+        "first_text_timeout_s": 10.0,  # give up if no words by then
+        "total_timeout_s": 20.0,  # whole reply, wall clock
+        "max_retries": 1,
+        "history_turns": 6,  # user+assistant pairs kept while on the fallback
+        "api_key_file": "anthropic_key",  # or ANTHROPIC_API_KEY; never in the repo
+        "usage_file": "cloud_usage.jsonl",  # one line per cloud call
+        "stt_model": "tiny.en",  # faster-whisper on the body, loaded on first use
+        # USD per million tokens, for the cost estimate in usage_file. Check
+        # https://claude.com/pricing when you change the model.
+        "pricing": {
+            "claude-haiku-5-5": {
+                "input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125,
+            },
+            "claude-sonnet-5-5": {
+                "input": 2.00, "output": 10.00, "cache_read": 0.10, "cache_write": 2.50,
+            },
+            "claude-opus-5-5": {
+                "input": 4.00, "output": 20.00, "cache_read": 0.20, "cache_write": 5.00,
+            },
+        },
+        # Spending caps for every Claude call (PC brain + body fallback), from usage_file.
+        # Past warn_at of the daily cap ROCO says so once; at a cap she goes local until
+        # local midnight (daily) or the 1st of next month (monthly). roco cloud-usage.
+        "budget": {
+            "daily_gbp": 0.20,
+            "monthly_gbp": 5.00,
+            "usd_to_gbp": 0.79,  # pricing is in USD
+            "warn_at": 0.8,
+        },
+    },
+    "brain": {
+        # PC brain (roco.brain.router, docs/ROCO_SPEC.md §9): Claude by default, local
+        # Ollama (the llm section) when there is no key, the API fails, the budget is spent
+        # or privacy mode is on; the offline line when both are down.
+        "default": "claude",  # claude | local
+        # Privacy mode fixed on: nothing goes to the cloud. Also by voice: "ROCO, local
+        # only" / "go private", "cloud back on" (saved in state_file).
+        "local_only": False,
+        "state_file": "brain_state.json",
+        "claude": {
+            "model": "claude-haiku-5-5",
+            "effort": "low",
+            "thinking": "adaptive",  # adaptive | disabled | omit (model default)
+            "max_tokens": 1024,
+            # Hard questions ("think harder", "take your time", ...) go to this model.
+            "escalate_model": "claude-sonnet-5-5",
+            "escalate_effort": "medium",
+            "escalate_max_tokens": 4096,
+            "escalate_phrases": None,  # None = built-in list (roco.brain.router)
+            "first_text_timeout_s": 6.0,  # no words (or tool call) by then: answer locally
+            "escalate_first_text_timeout_s": 25.0,  # the escalation model thinks first
+            "total_timeout_s": 40.0,
+            "retry_after_s": 60.0,  # after an API error, stay local this long
+        },
     },
     "history": {
         "max_turns": 12,
@@ -84,6 +171,7 @@ DEFAULTS: dict[str, Any] = {
             "model": "hey_jarvis",
             "threshold": 0.5,
             "inference_framework": "onnx",  # tflite is not available on Windows
+            "preroll_ms": 1200,  # audio before the wake word fired, sent with the turn
         },
         "recording": {
             "silence_s": 0.9,
@@ -91,6 +179,34 @@ DEFAULTS: dict[str, Any] = {
             "noise_floor_margin": 2.5,
         },
         "followup_s": 5.0,
+        # Body client (roco body / roco run): end of speech is decided on the body.
+        "vad": {
+            "engine": "silero",  # silero | energy
+            "threshold": 0.5,
+            "trailing_ms": 450,  # silence that ends a turn (fast; raise if it cuts you off)
+            "start_ms": 96,
+            "max_s": 15.0,
+            "start_timeout_s": 4.0,
+        },
+        # Echo cancellation keeps the mic open while ROCO talks (barge-in).
+        "aec": {
+            "engine": "auto",  # auto (webrtc, else speex, else none) | webrtc | speex | none
+            "min_erle_db": 10.0,  # weaker than this while speaking -> wake-word barge-in
+        },
+        "barge_in": {
+            "mode": "speech",  # speech (any speech, needs AEC) | name (wake word only) | off
+            "threshold": 0.6,
+            "start_ms": 128,  # speech needed before ROCO stops talking
+            "echo_margin_db": 3.0,  # ...and that far above the residual echo after AEC
+            "echo_guard": True,  # ignore barge-ins whose transcript is ROCO's own words
+            "preroll_ms": 800,  # audio from before the barge-in decision, sent with it
+        },
+        "playback": {
+            "rate": 22050,  # reopened at the brain's tts_rate on connect
+            # PortAudio output latency (seconds, or low | high). Part of the barge-in
+            # stop time; raise it if ROCO's voice crackles.
+            "latency": 0.05,
+        },
         "stt": {
             "model": "base.en",
             "device": "cpu",

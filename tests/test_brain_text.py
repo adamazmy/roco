@@ -107,6 +107,34 @@ def test_history_trims_to_max_turns():
     assert [m["content"] for m in h.messages] == ["u3", "a3", "u4", "a4"]
 
 
+def test_history_drops_old_turns_in_chunks_to_keep_the_prompt_cache():
+    h = History(max_turns=12)
+    sizes = []
+    for i in range(20):
+        h.add_turn(f"u{i}", f"a{i}")
+        sizes.append(len(h) // 2)
+    # Fills to 12, then drops back to 6: the prefix changes once every 7 turns.
+    assert sizes == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 6, 7, 8, 9, 10, 11, 12, 6]
+    assert h.messages[-1]["content"] == "a19"
+
+
+def test_history_stamp_wording_only_changes_at_coarse_steps(tmp_path):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/London")
+    at = datetime(2026, 11, 21, 15, 0, tzinfo=tz)
+    h = History(5, tmp_path / "h.json")
+    h.add_turn("q", "a", "neutral", _trace("result"), at=at)
+
+    def stamp(minutes):
+        tools = h.for_model(now=at + timedelta(minutes=minutes))
+        return [m["content"] for m in tools if m["role"] == "tool"][0]
+
+    assert stamp(3) == stamp(9) == stamp(19)
+    assert stamp(25) == stamp(140)
+
+
 def test_history_zero_turns_keeps_nothing():
     h = History(max_turns=0)
     h.add_turn("u", "a")
@@ -229,23 +257,38 @@ def test_history_caps_tool_results_and_stamps_their_time(tmp_path):
     assert "fetched yesterday." in tools[0]["content"]
     assert tools[0]["content"].endswith("... (cut short)")
     assert len(tools[0]["content"]) < 600
-    assert "fetched about 55 minutes ago." in tools[1]["content"]
+    assert "fetched earlier today." in tools[1]["content"]
     assert tools[1]["content"].endswith(") short")
 
 
 def test_history_squeezes_tool_results_of_older_turns():
     h = History(10)
-    for i in range(5):
+    for i in range(7):
         h.add_turn(f"u{i}", f"a{i}", "happy", _trace(f"r{i}-" + "x" * 300))
     sent = h.for_model(tool_turns=3)
     results = [m["content"] for m in sent if m["role"] == "tool"]
     # Every turn keeps its tool call (no "action without a call" to imitate)...
-    assert len(results) == 5
-    assert sum(m["role"] == "assistant" and "tool_calls" in m for m in sent) == 5
-    # ...but only the last three keep long results.
-    assert all(len(r) < 120 for r in results[:2])
-    assert all(len(r) > 300 for r in results[2:])
+    assert len(results) == 7
+    assert sum(m["role"] == "assistant" and "tool_calls" in m for m in sent) == 7
+    # ...but only the recent ones keep long results (the last 3 to 5, moving in steps of 3).
+    assert all(len(r) < 120 for r in results[:3])
+    assert all(len(r) > 300 for r in results[3:])
     assert sent[3] == {"role": "assistant", "content": "[happy] a0"}
+
+
+def test_squeezed_results_only_change_every_few_turns():
+    """A result squeezed one turn later than before changes the prompt mid-way, which
+    throws away Ollama's prompt cache: the boundary must move in steps, not every turn."""
+    h = History(20)
+    prompts = []
+    for i in range(9):
+        h.add_turn(f"u{i}", f"a{i}", "happy", _trace(f"r{i}-" + "x" * 300))
+        prompts.append(h.for_model(tool_turns=3))
+    def prefix_kept(before, after):
+        return after[: len(before)] == before
+    kept = [prefix_kept(prompts[i], prompts[i + 1]) for i in range(len(prompts) - 1)]
+    # Only the turns that move the boundary (6th and 9th reply) rewrite earlier results.
+    assert kept == [True, True, True, True, False, True, True, False]
 
 
 @pytest.mark.parametrize(
@@ -275,9 +318,9 @@ def test_history_stamps_never_contain_a_clock_time(tmp_path):
         h.add_turn("q", "a", "neutral", _trace("result"), at=now - ago)
     contents = [m["content"] for m in h.for_model(now=now) if m["role"] == "tool"]
     assert [c.split(".")[0] for c in contents] == [
-        "(Old result, fetched just now",
-        "(Old result, fetched about 7 minutes ago",
-        "(Old result, fetched about 3 hours ago",
+        "(Old result, fetched a few minutes ago",
+        "(Old result, fetched a few minutes ago",
+        "(Old result, fetched earlier today",
         "(Old result, fetched on Tuesday 17 November",
     ]
     assert not any(re.search(r"\d{1,2}:\d{2}", c) for c in contents)
@@ -301,3 +344,17 @@ def test_old_clock_answers_are_not_replayed(tmp_path):
             if m["role"] == "tool"][0]
     assert "11:04" not in tool["content"] and "eleven" not in tool["content"]
     assert "call get_current_time again" in tool["content"]
+
+
+def test_part_of_day_boundaries():
+    from datetime import datetime
+
+    from roco.tools.clock import part_of_day
+
+    def at(h):
+        return part_of_day(datetime(2026, 11, 21, h, 30))
+
+    assert [at(h) for h in (4, 5, 11, 12, 16, 17, 21, 22, 23)] == [
+        "night", "morning", "morning", "afternoon", "afternoon", "evening", "evening",
+        "night", "night",
+    ]

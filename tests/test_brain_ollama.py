@@ -383,7 +383,7 @@ def test_next_turn_replays_tag_and_tool_trace(mock, bus, registry):
     sent = mock.requests[2]["messages"][1:]
     assert [m["role"] for m in sent] == ["user", "assistant", "tool", "assistant", "user"]
     assert sent[1]["tool_calls"][0]["function"] == {"name": "add", "arguments": {"a": 1, "b": 2}}
-    assert sent[2]["content"].startswith("(Old result, fetched just now.")
+    assert sent[2]["content"].startswith("(Old result, fetched a few minutes ago.")
     assert sent[2]["content"].endswith(") 3")
     assert sent[3]["content"] == "[happy] Three."
     assert brain.history.messages[1] == {"role": "assistant", "content": "Three."}
@@ -471,3 +471,105 @@ def test_other_questions_are_not_prefetched(mock, bus, registry, said):
     mock.script = [[content("[neutral] Righto.")]]
     run(make_brain(mock.url, bus, registry), said)
     assert not any(m["role"] == "tool" for m in mock.requests[0]["messages"])
+
+
+# ---------------------------------------------------------------------- reminder repair
+@pytest.fixture
+def reminder_registry():
+    reg = ToolRegistry()
+    calls: list[dict] = []
+
+    @reg.tool(
+        description="Set a reminder.",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}, "minutes_from_now": {"type": "number"}},
+            "required": ["text"],
+        },
+    )
+    def set_reminder(text: str, minutes_from_now: float | None = None) -> str:
+        calls.append({"text": text, "minutes_from_now": minutes_from_now})
+        return f"Reminder 1 set: {text}."
+
+    reg.calls = calls
+    return reg
+
+
+def test_claimed_but_unset_reminder_is_set_silently(mock, bus, reminder_registry):
+    mock.script = [
+        [content("[smug] Water? Groundbreaking. I'll set it.")],  # bluff: no tool call
+        [tool_calls(("set_reminder", {"text": "drink water", "minutes_from_now": 10}))],
+        [content("[happy] Done.")],  # never spoken
+    ]
+    brain = make_brain(mock.url, bus, reminder_registry)
+    reply, sentences = run(brain, "Remind me to drink water in ten minutes.")
+    assert reminder_registry.calls == [{"text": "drink water", "minutes_from_now": 10}]
+    assert sentences == ["Water?", "Groundbreaking.", "I'll set it."]
+    repair_note = mock.requests[1]["messages"][-1]
+    assert repair_note["role"] == "user" and "didn't call set_reminder" in repair_note["content"]
+    # History keeps the real tool exchange, not the system note.
+    replay = json.dumps(brain.history.for_model(tools=True))
+    assert "set_reminder" in replay and "didn't call set_reminder" not in replay
+
+
+def test_reminder_repair_owns_up_when_the_model_still_does_not_set_it(
+    mock, bus, reminder_registry
+):
+    mock.script = [
+        [content("[smug] Oven, five minutes. Consider it done.")],
+        [content("[neutral] Sure.")],  # repair round, still no tool call
+    ]
+    brain = make_brain(mock.url, bus, reminder_registry)
+    reply, sentences = run(brain, "Set a reminder to check the oven in five minutes.")
+    assert reminder_registry.calls == []
+    assert sentences[-1] == ollama_brain.REMINDER_REPAIR_FAILED
+
+
+def test_no_repair_when_reminder_was_set_or_not_claimed(mock, bus, reminder_registry):
+    mock.script = [
+        [tool_calls(("set_reminder", {"text": "call mum"}))],
+        [content("[happy] Done, mum at six.")],
+        [content("[curious] What time should I remind you?")],
+    ]
+    brain = make_brain(mock.url, bus, reminder_registry)
+    run(brain, "Remind me to call mum at six.")
+    run(brain, "Remind me to stretch.")
+    assert len(mock.requests) == 3
+    assert len(reminder_registry.calls) == 1
+
+
+def test_warm_up_sends_the_real_prompt_once_without_streaming(mock, bus, registry):
+    mock.script = [content("[neutral] H")]  # a single chunk; Ollama answers non-streamed
+    brain = make_brain(mock.url, bus, registry, options={"num_gpu": 99})
+    brain.warm_up()
+    req = mock.requests[0]
+    assert req["stream"] is False
+    assert req["options"]["num_predict"] == 1 and req["options"]["num_gpu"] == 99
+    assert req["messages"][0] == brain._system_message()
+    assert {t["function"]["name"] for t in req["tools"]} == {"get_current_time", "add"}
+
+
+def test_warm_up_failure_is_only_logged(bus):
+    from mock_ollama import closed_port_url
+
+    brain = make_brain(closed_port_url(), bus)
+    assert brain.warm_up() is False
+
+
+def test_server_context_warms_the_brain_after_the_model_load():
+    import threading
+
+    from roco.server.context import _then_warm_up
+
+    order = []
+    preload = threading.Thread(target=lambda: order.append("load"))
+
+    class Brain:
+        def warm_up(self):
+            order.append("warm")
+
+    preload.start()
+    thread = _then_warm_up(preload, Brain())
+    thread.join(2)
+    assert order == ["load", "warm"]
+    assert _then_warm_up(None, Brain()) is None

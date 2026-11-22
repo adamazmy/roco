@@ -67,3 +67,78 @@ def test_hyphens_between_words_and_numbers_stay():
     assert clean_sentence(walk) == walk
     cold = "It's minus 5, or -5 degrees."
     assert clean_sentence(cold) == cold
+
+
+def test_first_chunk_may_be_a_short_clause():
+    splitter = SentenceSplitter(first_clause_min_chars=20)
+    out = splitter.feed("Today you have a gym session, from eight to nine, and then lunch")
+    assert out == ["Today you have a gym session,"]  # later clauses wait for 60 chars
+    assert splitter.feed(" with Sam at one") == []  # under 60 chars: no early clause now
+    assert splitter.flush() == "from eight to nine, and then lunch with Sam at one"
+
+
+# --------------------------------------------------------------------------- first chunk
+def _first_chunks(text: str) -> list[str]:
+    from roco.brain.sentences import FIRST_CLAUSE_MIN_CHARS
+
+    splitter = SentenceSplitter(first_clause_min_chars=FIRST_CLAUSE_MIN_CHARS)
+    out = []
+    for ch in text:  # token by token
+        out += splitter.feed(ch)
+    rest = splitter.flush()
+    return out + ([rest] if rest else [])
+
+
+def test_long_first_sentence_without_comma_starts_on_a_short_phrase():
+    text = "It's twenty-four minutes past ten at night on a chilly Saturday. Bed soon."
+    assert _first_chunks(text) == [
+        "It's twenty-four minutes past ten",
+        "at night on a chilly Saturday.",
+        "Bed soon.",
+    ]
+
+
+def test_first_short_clause_is_released_at_its_comma():
+    assert _first_chunks("Did you know, octopuses have three hearts and blue blood?") == [
+        "Did you know,",
+        "octopuses have three hearts and blue blood?",
+    ]
+
+
+def test_joining_word_split_waits_for_the_whole_word():
+    from roco.brain.sentences import FIRST_CLAUSE_MIN_CHARS
+
+    splitter = SentenceSplitter(first_clause_min_chars=FIRST_CLAUSE_MIN_CHARS)
+    # "an" must not be taken for "and" before the next token arrives.
+    assert splitter.feed("Your next meeting is on Tuesday an") == []
+    assert splitter.feed("d then") == ["Your next meeting is on Tuesday"]
+
+
+def test_only_the_first_chunk_is_split_on_joining_words():
+    text = "Sure thing. Your next meeting is tomorrow at ten with the design team."
+    assert _first_chunks(text) == [
+        "Sure thing.",
+        "Your next meeting is tomorrow at ten with the design team.",
+    ]
+
+
+def test_emoji_are_not_read_aloud():
+    from roco.brain.sentences import clean_sentence
+
+    assert clean_sentence("Are you developing insomnia? \U0001f634") == (
+        "Are you developing insomnia?"
+    )
+    assert clean_sentence("Nice one ❤️ mate.") == "Nice one mate."
+
+
+def test_clock_times_written_as_digits_are_said_in_words():
+    from roco.brain.sentences import clean_sentence
+
+    assert clean_sentence("A test event from 10:00 to 10:15 in the morning.") == (
+        "A test event from ten o'clock to quarter past ten in the morning."
+    )
+    assert clean_sentence("Meeting at 22:00.") == "Meeting at ten o'clock at night."
+    assert clean_sentence("It is 00:00.") == "It is midnight."
+    # Not clock times: ratios, versions, thousands.
+    for text in ("Score was 2:1.", "Version 3.10:00 stays.", "About 10,000 of them."):
+        assert clean_sentence(text) == text

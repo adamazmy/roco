@@ -37,8 +37,10 @@ _ROLES = ("user", "assistant")
 # A replayed `read_email` or a week of events must not push older turns out of context.
 MAX_TOOL_RESULT_CHARS = 400
 # The last this-many turns replay full (capped) results; older turns replay their tool
-# calls with results squeezed to OLD_TOOL_RESULT_CHARS.
-DEFAULT_TOOL_TURNS = 3
+# calls with results squeezed to OLD_TOOL_RESULT_CHARS. One keeps follow-ups working ("read
+# me the second one") while the only part of the prompt that changes from turn to turn is
+# its end: Ollama's prompt cache then covers everything before it (3 cost 1-4 s a turn).
+DEFAULT_TOOL_TURNS = 1
 OLD_TOOL_RESULT_CHARS = 80
 
 
@@ -54,8 +56,8 @@ def _cap_tool_message(
 
 
 def _fetched_when(at: Any, now: datetime | None) -> str:
-    """How long ago a tool result was fetched, WITHOUT a clock time: "just now",
-    "about 5 minutes ago", "about 2 hours ago", "yesterday", "on Thursday 19 November".
+    """How long ago a tool result was fetched, WITHOUT a clock time:
+    "a few minutes ago", "earlier today", "yesterday", "on Thursday 19 November".
 
     A clock time here ("fetched at 11:04") is the first thing a 7B model grabs when
     asked "what time is it?" later in the conversation, instead of calling the tool.
@@ -71,13 +73,11 @@ def _fetched_when(at: Any, now: datetime | None) -> str:
     if now.tzinfo is not None and stamp.tzinfo is not None:
         stamp = stamp.astimezone(now.tzinfo)
     minutes = int((now - stamp).total_seconds() // 60)
+    # Coarse buckets on purpose: this text sits early in the prompt, and any change to it
+    # makes Ollama re-read everything after it. "about 7 minutes ago" changed every turn and
+    # cost ~1.5 s per answer (2,400 prompt tokens re-read on the laptop GPU).
     if stamp.date() == now.date():
-        if minutes < 2:
-            return "just now"
-        if minutes < 60:
-            return f"about {minutes} minutes ago"
-        hours = round(minutes / 60)
-        return f"about {hours} hour{'s' if hours != 1 else ''} ago"
+        return "a few minutes ago" if minutes < 20 else "earlier today"
     if (now.date() - stamp.date()).days == 1:
         return "yesterday"
     return f"on {stamp:%A} {stamp.day} {stamp:%B}"
@@ -111,6 +111,7 @@ class History:
         tools: bool = True,
         tool_turns: int = DEFAULT_TOOL_TURNS,
         now: datetime | None = None,
+        mask_time: bool = True,
     ) -> list[dict[str, Any]]:
         """Messages to send to the model: past replies with their tag and tool trace.
 
@@ -118,13 +119,24 @@ class History:
         action with no call teaches the model to bluff. Only the last ``tool_turns``
         turns keep results of up to 400 characters; older results are squeezed to
         :data:`OLD_TOOL_RESULT_CHARS`. Each replayed result says when it was fetched,
-        so the model can tell stale calendar/email data from fresh.
+        so the model can tell stale calendar/email data from fresh. With ``mask_time``
+        (for small local models), old :data:`TIME_ONLY_TOOLS` results are replaced by a
+        reminder to call the tool again; Claude gets the old result with its age instead
+        (masked, it decided its earlier, correct times had been guesses).
         """
         out: list[dict[str, Any]] = []
         with self._lock:
             entries = [dict(m) for m in self._messages]
         replies = [i for i, m in enumerate(entries) if m["role"] == "assistant"]
-        recent = set(replies[-tool_turns:]) if tool_turns > 0 else set()
+        # The last ``tool_turns`` to ``2 * tool_turns - 1`` replies keep full results. The
+        # boundary moves in steps of ``tool_turns``, not every turn: squeezing a result
+        # changes the prompt from that point on, and Ollama then re-reads everything after
+        # it (measured 0.9-3.5 s per answer when it moved every turn).
+        if tool_turns > 0:
+            boundary = max(0, (len(replies) // tool_turns) * tool_turns - tool_turns)
+            recent = set(replies[boundary:])
+        else:
+            recent = set()
         for index, m in enumerate(entries):
             if m["role"] == "assistant":
                 if tools and m.get("tools"):
@@ -132,7 +144,8 @@ class History:
                     limit = MAX_TOOL_RESULT_CHARS if index in recent else OLD_TOOL_RESULT_CHARS
                     for t in m["tools"]:
                         t = _cap_tool_message(t, limit)
-                        if t.get("role") == "tool" and t.get("tool_name") in TIME_ONLY_TOOLS:
+                        is_time = t.get("tool_name") in TIME_ONLY_TOOLS
+                        if t.get("role") == "tool" and is_time and mask_time:
                             t["content"] = (
                                 "(Old result: the time back then. To know the time now, "
                                 "call get_current_time again.)"
@@ -176,6 +189,41 @@ class History:
             snapshot = list(self._messages)
         self._save(snapshot)
 
+    def amend_last_reply(self, assistant: str) -> bool:
+        """Replace the text of the newest assistant reply (keeps its emotion and tools).
+
+        Used after a barge-in, so the history holds what was heard rather than what
+        was generated. Returns False when there is no reply to amend.
+        """
+        with self._lock:
+            if not self._messages or self._messages[-1]["role"] != "assistant":
+                return False
+            self._messages[-1] = {**self._messages[-1], "content": assistant}
+            snapshot = list(self._messages)
+        self._save(snapshot)
+        return True
+
+    def forget_exchange(self, user: str) -> bool:
+        """Drop the newest exchange whose user turn is ``user`` (and its reply).
+
+        Used for echo turns: ROCO's own voice transcribed as if Adam had said it. Matching
+        on the text means a turn that never reached the history removes nothing else.
+        Returns False when no such turn is stored.
+        """
+        with self._lock:
+            for i in range(len(self._messages) - 1, -1, -1):
+                m = self._messages[i]
+                if m["role"] == "user" and m["content"] == user:
+                    end = i + 2 if (i + 1 < len(self._messages)
+                                    and self._messages[i + 1]["role"] == "assistant") else i + 1
+                    del self._messages[i:end]
+                    snapshot = list(self._messages)
+                    break
+            else:
+                return False
+        self._save(snapshot)
+        return True
+
     def clear(self) -> None:
         with self._lock:
             self._messages = []
@@ -190,7 +238,12 @@ class History:
         keep = self.max_turns * 2
         if keep == 0:
             return []
-        messages = messages[-keep:]
+        if len(messages) > keep:
+            # Drop several old turns at once (12 -> 6), not one per turn: dropping the oldest
+            # turn shifts the whole history in the prompt, so Ollama's prompt cache misses.
+            # With this, the cache is rebuilt once every few turns instead of every turn.
+            drop = self.max_turns // 2 if self.max_turns >= 6 else 0  # tiny: one at a time
+            messages = messages[-(keep - drop * 2):]
         # Never start with an orphan assistant message.
         while messages and messages[0]["role"] != "user":
             messages = messages[1:]

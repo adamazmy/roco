@@ -32,6 +32,8 @@ from roco.bus import Emotion
 from roco.personality.commands import Command, parse_command
 from roco.personality.people import PeopleStore, Person, write_json_atomic
 from roco.personality.render import (
+    FLIRT_EXAMPLES,
+    ROAST_EXAMPLES,
     Company,
     PromptParts,
     band,
@@ -49,6 +51,28 @@ from roco.personality.settings import (
 log = logging.getLogger(__name__)
 
 ChangeListener = Callable[[dict[str, Any]], None]
+
+
+def _key(sentence: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", sentence.lower()).strip()
+
+
+def _is_example(sentence: str) -> bool:
+    """True for an example line, or a piece of one: replies are released clause by
+    clause ("Your sleep schedule is a crime scene" / "and your commit history...")."""
+    key = _key(sentence)
+    if len(key.split()) < 3:
+        return False
+    return any(key in example for example in _EXAMPLE_KEYS)
+
+
+# Tone examples from the prompt, matched loosely (case and punctuation ignored).
+_EXAMPLE_KEYS = frozenset(
+    _key(line)
+    for table in (ROAST_EXAMPLES, FLIRT_EXAMPLES)
+    for lines in table.values()
+    for line in lines
+)
 
 # Tools that read the owner's personal data out loud. Hidden from the model while
 # someone who may not hear it is in the room (spec §5 Guest, §7 Yousaf, §10).
@@ -269,7 +293,16 @@ class Personality:
         return self.company.private_ok or not PRIVATE_TOOL.match(tool_name)
 
     def filter_sentence(self, sentence: str) -> str:
-        """Enforce name rules on spoken text: a person with ``use_name`` off is never named."""
+        """Enforce name rules on spoken text: a person with ``use_name`` off is never named.
+
+        Also drops a sentence that is one of the prompt's tone examples word for word:
+        qwen2.5:7b opens with them despite "never reuse these exact words" (seen live:
+        "Your sleep schedule is a crime scene..." twice in a row). The rest of the reply
+        still plays.
+        """
+        if _is_example(sentence):
+            log.info("Dropped a copied example line: %r", sentence)
+            return ""
         for person in self.people.all():
             if person.use_name or not person.nicknames:
                 continue

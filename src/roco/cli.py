@@ -27,10 +27,32 @@ def _not_implemented(feature: str, workstream: str) -> int:
 
 
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
-    """Full voice loop: wake word -> STT -> brain -> TTS, with face and servos."""
-    from roco.voice.app import run_voice
+    """Brain + body in one process (joined by memory_pipe), with face and servos."""
+    if getattr(args, "legacy", False):
+        from roco.voice.app import run_voice  # Phase 2 single-loop pipeline
 
-    return EXIT_OK if run_voice(cfg) == 0 else EXIT_FAIL
+        return EXIT_OK if run_voice(cfg) == 0 else EXIT_FAIL
+    from roco.client.app import run_local
+
+    return EXIT_OK if run_local(cfg, face=not args.no_face) == 0 else EXIT_FAIL
+
+
+def cmd_body(args: argparse.Namespace, cfg: Config) -> int:
+    """The robot side: mic, wake word, VAD, AEC, playback, face; talks to `roco brain`."""
+    from roco.client.app import run_body
+
+    return EXIT_OK if run_body(cfg, url=args.url, face=not args.no_face) == 0 else EXIT_FAIL
+
+
+def cmd_brain(args: argparse.Namespace, cfg: Config) -> int:
+    """Brain server: STT + LLM + TTS for a body client over the WebSocket link."""
+    from roco.config import deep_merge
+    from roco.server import run_server
+
+    link = {k: v for k, v in (("host", args.host), ("port", args.port)) if v is not None}
+    if link:
+        cfg = type(cfg)(deep_merge(cfg, {"link": link}))
+    return EXIT_OK if run_server(cfg) == 0 else EXIT_FAIL
 
 
 def cmd_chat(args: argparse.Namespace, cfg: Config) -> int:
@@ -72,6 +94,27 @@ def cmd_download_models(args: argparse.Namespace, cfg: Config) -> int:
     return EXIT_OK if main_download(cfg, force=args.force) else EXIT_FAIL
 
 
+def cmd_cloud_usage(args: argparse.Namespace, cfg: Config) -> int:
+    """Summarise the fallback brain's Claude calls and estimated spend."""
+    from roco.fallback.cli import run_cloud_usage
+
+    return run_cloud_usage(cfg, by=args.by)
+
+
+def cmd_fallback_prepare(args: argparse.Namespace, cfg: Config) -> int:
+    """Fetch the fallback's tiny.en model and pre-render the offline line (Pi setup)."""
+    from roco.fallback.offline_audio import prepare
+
+    return 0 if prepare(cfg) else 1
+
+
+def cmd_cloud_key(args: argparse.Namespace, cfg: Config) -> int:
+    """Store the Anthropic API key for the fallback brain in ~/.roco."""
+    from roco.fallback.cli import run_cloud_key
+
+    return run_cloud_key(cfg, from_stdin=args.stdin, show=args.show)
+
+
 def cmd_demo_face(args: argparse.Namespace, cfg: Config) -> int:
     """Cycle through every emotion and state on the face."""
     try:
@@ -103,7 +146,18 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(func=func)
         return p
 
-    add("run", cmd_run, "run the full voice assistant (wake word, speech, face)")
+    run = add("run", cmd_run, "run the full voice assistant: brain + body in one process")
+    run.add_argument("--no-face", action="store_true", help="no face window")
+    run.add_argument("--legacy", action="store_true",
+                     help="the Phase 2 single-loop pipeline (no barge-in)")
+
+    body = add("body", cmd_body, "run the robot body and connect to a brain server")
+    body.add_argument("--url", help="brain WebSocket URL (default: link.brain_url)")
+    body.add_argument("--no-face", action="store_true", help="no face window")
+
+    brain = add("brain", cmd_brain, "run the brain server the body connects to (PC)")
+    brain.add_argument("--host", help="listen address (default: link.host)")
+    brain.add_argument("--port", type=int, help="listen port (default: link.port)")
 
     chat = add("chat", cmd_chat, "chat with ROCO by keyboard")
     chat.add_argument("--speak", action="store_true", help="also speak replies aloud")
@@ -125,6 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     dl = add("download-models", cmd_download_models, "download wake-word and voice models")
     dl.add_argument("--force", action="store_true", help="re-download even if present")
+
+    usage = add("cloud-usage", cmd_cloud_usage, "show Claude fallback calls and estimated cost")
+    usage.add_argument("--by", choices=("day", "month"), default="month", help="group by")
+    key = add("cloud-key", cmd_cloud_key, "store the Anthropic API key in ~/.roco (hidden prompt)")
+    key.add_argument("--stdin", action="store_true", help="read the key from stdin")
+    key.add_argument("--show", action="store_true", help="show which key is in use (masked)")
+    add("fallback-prepare", cmd_fallback_prepare,
+        "fetch the fallback STT model and pre-render the offline line (Pi setup)")
 
     add("demo-face", cmd_demo_face, "cycle the face through every emotion")
     return parser

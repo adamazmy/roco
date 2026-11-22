@@ -6,18 +6,23 @@ Guards the behaviour a prompt, history or model change can quietly break:
 - replies keep their emotion tag and never leak it into the text,
 - the reminder file ends in the state the conversation asked for.
 
-Skipped unless Ollama runs with the configured model (``pytest -m ollama -s``).
-The calendar tool is a stand-in shaped like workstream D's.
+Runs against both brains: local Ollama (``pytest -m ollama -s``, skipped unless Ollama runs
+with the configured model) and Claude (``pytest -m cloud -s``, skipped without an
+Anthropic key; costs well under a penny per run on Haiku). The calendar tool is a
+stand-in shaped like workstream D's.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 
+from roco.brain.claude_brain import ClaudeBrain, create_claude_client
 from roco.brain.ollama_brain import OllamaBrain
 from roco.bus import EventBus
 from roco.config import DEFAULTS, load_config
@@ -26,7 +31,9 @@ from roco.tools import ToolContext, build_registry
 from roco.tools import reminders as rem
 from roco.tools.clock import spoken_time
 
-pytestmark = [pytest.mark.ollama, pytest.mark.timeout(900)]
+pytestmark = [pytest.mark.timeout(900)]
+BRAINS = [pytest.param("ollama", marks=pytest.mark.ollama),
+          pytest.param("claude", marks=pytest.mark.cloud)]
 
 # (what Adam says, tool that must be called or None, hook run before the turn)
 SCENARIO: list[tuple[str, str | None, str | None]] = [
@@ -70,8 +77,24 @@ def _states_current_time(reply: str) -> bool:
     return False
 
 
-@pytest.fixture(scope="module", autouse=True)
-def require_model():
+def _real_key() -> str | None:
+    """ANTHROPIC_API_KEY, else the real ~/.roco/anthropic_key (tests isolate ROCO_HOME)."""
+    if key := os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return key
+    path = Path(os.path.expanduser("~")) / ".roco" / "anthropic_key"
+    try:
+        return path.read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def _require(kind: str) -> str | None:
+    if kind == "claude":
+        pytest.importorskip("anthropic")
+        key = _real_key()
+        if not key:
+            pytest.skip("no Anthropic API key")
+        return key
     host, model = DEFAULTS["llm"]["host"], DEFAULTS["llm"]["model"]
     try:
         names = {m["name"] for m in httpx.get(f"{host}/api/tags", timeout=3).json()["models"]}
@@ -79,9 +102,20 @@ def require_model():
         pytest.skip(f"Ollama is not reachable at {host}")
     if model not in names:
         pytest.skip(f"model {model} is not pulled")
+    return None
 
 
-def test_long_conversation_uses_tools_for_every_action():
+def _show(text: str) -> None:
+    """Print the transcript even on a Windows console that can't encode an emoji."""
+    import sys
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(encoding, "replace").decode(encoding))
+
+
+@pytest.mark.parametrize("kind", BRAINS)
+def test_long_conversation_uses_tools_for_every_action(kind):
+    key = _require(kind)
     cfg = load_config(overrides={"history": {"persist": False}})
     bus = EventBus()
     registry = build_registry(ToolContext(config=cfg, bus=bus))
@@ -109,20 +143,37 @@ def test_long_conversation_uses_tools_for_every_action():
         return original_call(name, arguments)
 
     registry.call = spy
-    brain = OllamaBrain(cfg, bus, registry)
     first_chunks: list[str] = []
-    original_stream = brain.client.stream_chat
+    if kind == "claude":
+        brain = ClaudeBrain(cfg, bus, registry, client=create_claude_client(cfg, key))
+        original_message = brain.client.stream_message
 
-    def stream(messages, tools=None):
-        seen = False
-        for chunk in original_stream(messages, tools):
-            text = (chunk.get("message") or {}).get("content") or ""
-            if text.strip() and not seen:
-                first_chunks.append(text.lstrip())
-                seen = True
-            yield chunk
+        def stream_message(params, on_text, cancel=None, **kw):
+            seen: list[bool] = []
 
-    brain.client.stream_chat = stream
+            def spy_text(text: str) -> None:
+                if text.strip() and not seen:
+                    first_chunks.append(text.lstrip())
+                    seen.append(True)
+                on_text(text)
+
+            return original_message(params, spy_text, cancel, **kw)
+
+        brain.client.stream_message = stream_message
+    else:
+        brain = OllamaBrain(cfg, bus, registry)
+        original_stream = brain.client.stream_chat
+
+        def stream(messages, tools=None):
+            seen = False
+            for chunk in original_stream(messages, tools):
+                text = (chunk.get("message") or {}).get("content") or ""
+                if text.strip() and not seen:
+                    first_chunks.append(text.lstrip())
+                    seen = True
+                yield chunk
+
+        brain.client.stream_chat = stream
 
     transcript: list[str] = []
     failures: list[str] = []
@@ -168,5 +219,84 @@ def test_long_conversation_uses_tools_for_every_action():
         brain.close()
 
     report = "\n".join(transcript)
-    print("\n" + report + f"\n  tag rate: {tagged}/{len(SCENARIO)}")
+    _show(f"\n[{kind}]\n" + report + f"\n  tag rate: {tagged}/{len(SCENARIO)}")
+    assert not failures, "\n".join(failures) + "\n\n" + report
+
+
+# Adam's spoken retest (2026-11-22): echo transcripts of ROCO's own voice filled the
+# history with turns that used no tools, and qwen2.5 then answered "Do I have any unread
+# emails?" from nothing. These turns rebuild that history before the real questions.
+CHATTER: list[tuple[str, str]] = [
+    ("Hello? Hello?", "Hello, Adam. I'm right here."),
+    ("I'm right here.", "Yes, you are. Lovely to see you."),
+    ("Lovely to see you.", "Are you repeating me now?"),
+    ("Are you repeating me now?", "Apparently so. Very flattering."),
+    ("Very flattering.", "Mm, flattery gets you everywhere."),
+    ("Everywhere.", "Everywhere indeed."),
+    ("Okay.", "Okay."),
+    ("Yeah.", "Right then."),
+    ("Right then.", "Anything you need?"),
+    ("Anything you need?", "That's my line, Adam."),
+]
+AFTER_CHATTER: list[tuple[str, str]] = [
+    ("Do I have any unread emails?", "get_unread_emails"),
+    ("What's on my calendar tomorrow?", "get_events"),
+    ("Remind me to ring the garage in ten minutes.", "set_reminder"),
+    ("What reminders have I got?", "list_reminders"),
+    ("Cancel the garage one.", "cancel_reminder"),
+]
+
+
+@pytest.mark.parametrize("kind", BRAINS)
+def test_tools_are_still_called_after_a_history_of_chatter(kind):
+    key = _require(kind)
+    cfg = load_config(overrides={"history": {"persist": False}})
+    bus = EventBus()
+    registry = build_registry(ToolContext(config=cfg, bus=bus))
+
+    @registry.tool(
+        description="List calendar events for a day: 'today', 'tomorrow' or YYYY-MM-DD.",
+        parameters={"type": "object", "properties": {"day": {"type": "string"}},
+                    "required": ["day"]},
+    )
+    def get_events(day: str) -> str:
+        return f"{day}: MOT at the garage at 09:30."
+
+    if "get_unread_emails" not in registry:
+        @registry.tool(
+            description="Read Adam's unread emails (sender and subject), newest first.",
+            parameters={"type": "object", "properties": {"max": {"type": "integer"}},
+                        "required": []},
+        )
+        def get_unread_emails(max: int = 5) -> str:
+            return "2 unread: Halfords (Your MOT is booked); Mum (Sunday lunch?)."
+
+    calls: list[str] = []
+    original_call = registry.call
+
+    def spy(name, arguments=None):
+        calls.append(name)
+        return original_call(name, arguments)
+
+    registry.call = spy
+    if kind == "claude":
+        brain = ClaudeBrain(cfg, bus, registry, client=create_claude_client(cfg, key))
+    else:
+        brain = OllamaBrain(cfg, bus, registry)
+    for user, reply in CHATTER:
+        brain.history.add_turn(user, reply, "neutral", [])
+    failures: list[str] = []
+    transcript: list[str] = []
+    try:
+        for said, required in AFTER_CHATTER:
+            calls.clear()
+            reply = brain.respond(said)
+            transcript.append(f"you: {said}\n  tools={calls}\n  roco: {reply}")
+            if required not in calls:
+                failures.append(f"{said!r}: expected {required}, got {calls}: {reply!r}")
+    finally:
+        rem.stop_all()
+        brain.close()
+    report = "\n".join(transcript)
+    _show(f"\n[{kind} after chatter]\n" + report)
     assert not failures, "\n".join(failures) + "\n\n" + report

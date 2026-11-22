@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 
 SentenceCallback = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class TurnHooks:
+    """Optional progress callbacks for :meth:`Brain.respond_turn` (the brain server uses
+    them for latency stages and filler lines). They run on the brain's thread: keep them
+    quick and never raise.
+
+    - ``on_token()``: a piece of reply text arrived from the model (called per piece).
+    - ``on_tools(names)``: the model asked for these tools; they are about to run.
+    """
+
+    on_token: Callable[[], None] | None = None
+    on_tools: Callable[[list[str]], None] | None = None
 
 
 class Brain(ABC):
@@ -35,6 +51,47 @@ class Brain(ABC):
     @abstractmethod
     def respond(self, text: str, on_sentence: SentenceCallback | None = None) -> str:
         """Return the full reply text (tag stripped), calling ``on_sentence`` per sentence."""
+
+    def respond_turn(
+        self,
+        text: str,
+        on_sentence: SentenceCallback | None = None,
+        *,
+        cancel: threading.Event | None = None,
+        hooks: TurnHooks | None = None,
+    ) -> str:
+        """:meth:`respond` that can be stopped (barge-in) and reports progress.
+
+        Once ``cancel`` is set, the brain stops generating as soon as it can (within one
+        streamed chunk), runs no further tools, delivers no more sentences and returns
+        the text delivered so far. The turn is still stored in the history (with any
+        tool calls already made), so :meth:`amend_last_reply` can then replace the reply
+        with what the user actually heard.
+
+        The default ignores ``hooks`` and only honours ``cancel`` between sentences, so
+        every existing :class:`Brain` works with the brain server unchanged.
+        """
+        if cancel is None:
+            return self.respond(text, on_sentence)
+
+        def guarded(sentence: str) -> None:
+            if not cancel.is_set() and on_sentence is not None:
+                on_sentence(sentence)
+
+        return self.respond(text, guarded)
+
+    def amend_last_reply(self, heard: str) -> None:
+        """Replace the last stored reply with ``heard`` (barge-in: only what was played).
+
+        Default: no-op, for brains without a history.
+        """
+
+    def forget_turn(self, user_text: str) -> None:
+        """Remove the exchange that started with ``user_text`` from the history: the body
+        found that turn was ROCO's own voice coming back (``interrupt{reason: "echo"}``).
+
+        Default: no-op, for brains without a history.
+        """
 
     @abstractmethod
     def reset(self) -> None:

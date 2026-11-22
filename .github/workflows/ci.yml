@@ -24,4 +24,4 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: ruff check .
-      - run: pytest -m "not ollama and not hardware"
+      - run: pytest -m "not ollama and not hardware and not cloud"

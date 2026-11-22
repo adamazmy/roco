@@ -74,6 +74,18 @@ def describe_date(now: datetime) -> str:
     return f"{now:%A} {now.day} {now:%B %Y}"
 
 
+def part_of_day(now: datetime) -> str:
+    """``morning`` (5-12), ``afternoon`` (12-17), ``evening`` (17-22) or ``night``."""
+    hour = now.hour
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 22:
+        return "evening"
+    return "night"
+
+
 def describe_now(now: datetime) -> str:
     """e.g. ``five minutes past two in the afternoon on Friday 20 November 2026 (14:05)``.
 

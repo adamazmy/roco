@@ -21,6 +21,23 @@ llm:
   timeout_s: 120
   max_tool_rounds: 5
 
+brain:                     # the PC brain: Claude by default, Ollama (llm) as the fallback
+  default: claude          # claude | local
+  local_only: false        # true = nothing ever goes to the cloud (voice: "ROCO, local only")
+  claude:
+    model: claude-haiku-5-5          # normal turns
+    escalate_model: claude-sonnet-5-5  # "think harder", "take your time", ...
+
+cloud:                     # the Anthropic key, timeouts, prices and budget for every Claude call
+  enabled: true            # needs a key: `roco cloud-key` (stored in ~/.roco/anthropic_key)
+  model: claude-haiku-5-5  # the body's own fallback; add a price under cloud.pricing if changed
+  effort: low              # low = fastest first sentence
+  # Every call is logged with tokens + estimated cost: `roco cloud-usage`.
+  budget:                  # at a cap ROCO goes local until midnight / the 1st
+    daily_gbp: 0.20
+    monthly_gbp: 5.00
+    usd_to_gbp: 0.79
+
 history:
   max_turns: 12            # user+assistant pairs kept in context
   persist: true
@@ -35,10 +52,25 @@ voice:
   wake_word:
     model: hey_jarvis
     threshold: 0.5
-  recording:
-    silence_s: 0.9         # stop recording after this much silence
+    preroll_ms: 1200       # audio before the wake word fired: whisper hears all of "hey Jarvis"
+  recording:               # roco run --legacy only (Phase 2 energy endpointing)
+    silence_s: 0.9
     max_s: 15
   followup_s: 5            # talk again without the wake word within this window
+  vad:                     # roco body / roco run: end of speech is decided on the body
+    engine: silero         # silero | energy
+    trailing_ms: 450       # silence that ends your turn; raise it if ROCO cuts you off
+  aec:
+    engine: auto           # auto | webrtc | speex | none (see docs/AEC.md)
+    min_erle_db: 10        # weaker echo cancellation -> barge-in needs the wake word
+  barge_in:
+    mode: speech           # speech (interrupt by talking) | name (wake word only) | off
+    start_ms: 128          # speech needed before ROCO stops talking
+    echo_margin_db: 3      # ...and that far above ROCO's leftover echo
+    echo_guard: true       # ignore barge-ins whose transcript is ROCO's own words
+    preroll_ms: 800        # audio from before the barge-in decision, sent with the turn
+  playback:
+    latency: 0.05          # seconds; raise to 0.1 if ROCO's voice crackles
   stt:
     model: base.en
     device: cpu            # or cuda

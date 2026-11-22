@@ -35,13 +35,19 @@ voice = [
     "onnxruntime>=1.17",
     "faster-whisper>=1.0.0",
     "piper-tts>=1.2.0",
+    "livekit>=1.0",  # WebRTC AEC for barge-in in `roco run` (docs/AEC.md)
 ]
 face = ["pygame>=2.5"]
 # Phase 3 split. The PC brain server runs STT + TTS; the Pi body client runs the mic,
 # wake word, VAD, playback and face. Workstreams add their libraries (AEC, Kokoro,
 # anthropic) to these lists. `voice` stays as "both", for `roco run` on one machine.
 brain = ["numpy>=1.26", "faster-whisper>=1.0.0", "piper-tts>=1.2.0"]
-body = ["numpy>=1.26", "sounddevice>=0.4.6", "openwakeword>=0.6.0", "onnxruntime>=1.17"]
+# livekit = WebRTC AudioProcessingModule (AEC3) for barge-in, see docs/AEC.md.
+# piper-tts = local voice for fallback replies (loaded only when the brain is down).
+body = [
+    "numpy>=1.26", "sounddevice>=0.4.6", "openwakeword>=0.6.0", "onnxruntime>=1.17",
+    "livekit>=1.0", "piper-tts>=1.2.0",
+]
 google = [
     "google-api-python-client>=2.120",
     "google-auth>=2.28",
@@ -49,10 +55,14 @@ google = [
     "google-auth-httplib2>=0.2",
 ]
 outlook = ["msal>=1.28"]
+# Fallback brain on the body (roco.fallback): Claude + whisper tiny.en for STT.
+cloud = ["anthropic>=2.0", "numpy>=1.26", "faster-whisper>=1.0.0"]
 pi = ["adafruit-circuitpython-servokit>=1.3"]
-dev = ["pytest>=8.0", "pytest-timeout>=2.3", "ruff>=0.5"]
+# anthropic: so CI runs the Claude client tests against the real SDK over a mocked
+# HTTP transport (no network). It is pure Python and light.
+dev = ["pytest>=8.0", "pytest-timeout>=2.3", "ruff>=0.5", "anthropic>=2.0"]
 # Everything you want on the Windows "brain" PC. `pi` is deliberately excluded.
-all = ["roco[voice,face,google,outlook,dev]"]
+all = ["roco[voice,face,google,outlook,dev,brain,body,cloud]"]
 
 [project.scripts]
 roco = "roco.cli:main"
@@ -70,6 +80,7 @@ addopts = "-ra"
 timeout = 30
 markers = [
     "ollama: needs a real Ollama server (skipped in CI)",
+    "cloud: calls the real Claude API with your key, costs money (skipped in CI)",
     "hardware: needs a mic, speaker, display or servos (skipped in CI)",
 ]
 
