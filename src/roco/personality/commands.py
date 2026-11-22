@@ -40,7 +40,7 @@ SLIDER_WORDS: dict[str, tuple[str, ...]] = {
     "energy": ("energy", "hype", "enthusiasm"),
 }
 ADJECTIVES: dict[str, tuple[str, ...]] = {
-    "roast": ("savage", "mean", "brutal", "roasty"),
+    "roast": ("savage", "mean", "brutal", "roasty", "unhinged"),
     "flirt": ("flirty", "flirtatious", "charming"),
     "sass": ("sassy", "cheeky", "smug"),
     "chattiness": ("chatty", "talkative"),
@@ -209,9 +209,50 @@ def _person(name: str, original: str, people: PeopleStore | None) -> tuple[str, 
     return ("guest", first.capitalize())
 
 
+# Second chance for mode commands when Whisper adds or clips words around the key phrase
+# ("No, can you go into unhinged mode?", "of this unhinged mode.", "this behavior.").
+# Only short utterances, and never narrative, questions about or negations of a mode.
+FUZZY_MAX_WORDS = 7
+_FUZZY_MODE = re.compile(
+    r"\b(?P<preset>unhinged|savage|feral|professional|chill)\s+(?:mode|form|mood|preset)\b"
+    r"|\b(?:go|get|going|getting|be)\s+(?:(?:into|in|to|on)\s+)?(?P<preset2>unhinged|feral)\b"
+)
+FUZZY_ADJUST_MAX_WORDS = 14
+_FUZZY_ADJUST = re.compile(
+    rf"\b(?:a (?:bit|lot|little) |way |much |even |loads )?(?P<dir>more|less) (?P<adj>{_ADJ})\b"
+)
+_FUZZY_BEHAVE = re.compile(r"\b(?:behave|behaving|behaviour|behavior)\b")
+_NOT_A_REQUEST_WORDS = (
+    "was were been is are am last yesterday earlier used when if why what how does did "
+    "tell never not don't dont isn't wasn't without about like love hate than at explain "
+    "describe mean means meaning"
+)
+_NOT_A_REQUEST = frozenset(_NOT_A_REQUEST_WORDS.split())
+
+
+def _fuzzy_preset(t: str) -> Command | None:
+    words = t.split()
+    if words[:1] == ["no"]:  # "No, can you ...": filler here; "no flirting" matched earlier
+        words = words[1:]
+    if not words or len(words) > FUZZY_ADJUST_MAX_WORDS or _NOT_A_REQUEST.intersection(words):
+        return None
+    rest = " ".join(words)
+    m = _FUZZY_MODE.search(rest)
+    if m and len(words) <= FUZZY_MAX_WORDS:
+        return Command("preset", value=PRESET_ALIASES[m["preset"] or m["preset2"]])
+    if _FUZZY_BEHAVE.search(rest) and len(words) <= 3:
+        return Command("preset", value="chill")
+    # "I want you to be way more savage with me from now on", "get a bit more unhinged".
+    m = _FUZZY_ADJUST.search(rest)
+    if m:
+        step = STEP if m["dir"] == "more" else -STEP
+        return Command("adjust", ADJ_TO_SLIDER[m["adj"]], step)
+    return None
+
+
 def parse_command(text: str, people: PeopleStore | None = None) -> Command | None:
     t = normalise(text)
-    if not t or len(t.split()) > 9:
+    if not t or len(t.split()) > FUZZY_ADJUST_MAX_WORDS:
         return None
     for pattern, kind in _PATTERNS:
         m = pattern.fullmatch(t)
@@ -248,6 +289,9 @@ def parse_command(text: str, people: PeopleStore | None = None) -> Command | Non
             return Command("adjust", key, STEP if kind == "up" else -STEP) if key else None
         if kind == "talk":
             return Command("adjust", "chattiness", STEP if g["dir"] == "more" else -STEP)
+    fuzzy = _fuzzy_preset(t)
+    if fuzzy is not None:
+        return fuzzy
     m = _ARRIVE.fullmatch(t)
     if m:
         who = _person(m["name"], text, people)
