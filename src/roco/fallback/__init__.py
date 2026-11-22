@@ -11,6 +11,7 @@ from roco.fallback.chain import (
     FallbackChain,
     create_fallback,
 )
+from roco.fallback.guards import note_brain_settings
 
 __all__ = [
     "BRAIN_RESTORED_LINE",
@@ -18,4 +19,5 @@ __all__ = [
     "OFFLINE_LINE",
     "FallbackChain",
     "create_fallback",
+    "note_brain_settings",
 ]

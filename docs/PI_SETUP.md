@@ -109,6 +109,20 @@ It is stored in `~/.roco/anthropic_key` with `chmod 600`, never in the repo or c
 too. Every cloud call is logged with its tokens and estimated cost:
 `~/roco/.venv/bin/roco cloud-usage` (or `--by day`).
 
+Two things stop the Pi from calling Claude even with a key:
+
+- **Private mode.** "ROCO, local only" / "go private" on the PC brain also covers the
+  Pi. The brain sends the mode to the body, and the Pi saves the last value in
+  `~/.roco/fallback_state.json`, so it still applies if the Pi boots while the PC is off.
+  With private mode on and the PC down, ROCO says once that she won't use the cloud, then
+  only the offline line. `brain.local_only: true` in the Pi's config forces it on.
+- **Budget caps** (`cloud.budget`: £0.20 a day, £5 a month by default). **The caps are
+  per machine.** The Pi counts only its own `~/.roco/cloud_usage.jsonl` (its fallback
+  calls), and the PC counts its own, so with both at the defaults the worst case is twice
+  the caps. Lower `cloud.budget` in the Pi's config if you want a tighter combined limit.
+  Past a cap, ROCO says so once, then only the offline line until local midnight (daily)
+  or the 1st (monthly).
+
 ### 9. Check
 
 ```bash
