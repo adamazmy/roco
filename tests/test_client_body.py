@@ -44,8 +44,9 @@ TTS = b"\x10\x00" * 1600  # 100 ms at 16 kHz
 
 class Rig:
     def __init__(self, aec_name="webrtc", connect=True, monitor=None, fallback=None,
-                 tts=None, settings=None):
+                 tts=None, settings=None, settings_hook=None, welcome_settings=None):
         self.brain = Brain()
+        self.brain.welcome_settings = welcome_settings or {}
         self.clock = FakeClock()
         self.bus = EventBus()
         self.states = []
@@ -58,7 +59,8 @@ class Rig:
             connect=self.brain.connect if connect else None, token="tok",
             wake=FakeWake(WAKE), settings=settings or BodySettings(),
             aec_name=aec_name, echo_monitor=monitor, fallback_factory=fallback,
-            local_tts_factory=tts, output_latency=lambda: 0.02, clock=self.clock,
+            local_tts_factory=tts, on_brain_settings=settings_hook,
+            output_latency=lambda: 0.02, clock=self.clock,
             link_options=dict(backoff_min_s=0.01, backoff_max_s=0.02, recv_timeout_s=0.02,
                               rng=random.Random(0)),
         )
@@ -598,3 +600,58 @@ def test_barge_in_mode_accepts_the_old_name():
     assert BargeInMode.parse("wake_word") is BargeInMode.NAME
     assert BargeInMode.parse("name") is BargeInMode.NAME
     assert BargeInMode.parse(None) is BargeInMode.SPEECH
+
+
+# --------------------------------------------------------------------------- brain settings
+
+
+def test_brain_settings_reach_the_fallback_hook_on_welcome_and_on_change():
+    from roco.protocol import Settings
+
+    seen = []
+    r = Rig(settings_hook=seen.append,
+            welcome_settings={"brain": {"local_only": False}, "muted": False})
+    try:
+        assert wait_for(lambda: seen)
+        assert seen[0] == {"brain": {"local_only": False}, "muted": False}
+        r.brain.end.send(Settings(values={"brain": {"local_only": True}}))
+        assert wait_for(lambda: len(seen) == 2)
+        assert seen[1] == {"brain": {"local_only": True}}
+        # after a brain restart the new welcome is forwarded again
+        r.brain.welcome_settings = {"brain": {"local_only": True}}
+        r.brain.end.close()
+        assert wait_for(lambda: len(r.brain.ends) == 2)
+        r.brain.accept()
+        assert wait_for(lambda: len(seen) == 3)
+        assert seen[2] == {"brain": {"local_only": True}}
+    finally:
+        r.close()
+
+
+def test_a_failing_settings_hook_does_not_break_the_body():
+    from roco.protocol import Settings
+
+    def boom(values):
+        raise RuntimeError("disk full")
+
+    r = Rig(settings_hook=boom)
+    try:
+        r.brain.end.send(Settings(values={"muted": True}))
+        assert wait_for(lambda: r.body.muted)  # the rest of the message still applies
+    finally:
+        r.close()
+
+
+def test_factory_finds_the_fallback_settings_hook(monkeypatch, config):
+    import types
+
+    from roco.client import factory
+
+    calls = []
+    fake = types.SimpleNamespace(note_brain_settings=lambda cfg, v: calls.append((cfg, v)))
+    monkeypatch.setitem(__import__("sys").modules, "roco.fallback", fake)
+    hook = factory.brain_settings_hook(config)
+    hook({"brain": {"local_only": True}})
+    assert calls == [(config, {"brain": {"local_only": True}})]
+    monkeypatch.setitem(__import__("sys").modules, "roco.fallback", types.SimpleNamespace())
+    assert factory.brain_settings_hook(config) is None  # older fallback: no hook

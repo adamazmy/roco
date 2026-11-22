@@ -84,6 +84,7 @@ class Brain:
         self.ends = []  # brain-side ends, newest last
         self.refuse = None  # an Error to answer hello with
         self.fail_connect = False
+        self.welcome_settings = {}  # sent in every welcome
 
     def connect(self):
         if self.fail_connect:
@@ -117,7 +118,8 @@ class Brain:
     def accept(self, tts_rate: int = 16000) -> Hello:
         hello = self.recv()
         assert isinstance(hello, Hello), hello
-        self.end.send(self.refuse or Welcome(protocol=1, brain="fake", tts_rate=tts_rate))
+        self.end.send(self.refuse or Welcome(protocol=1, brain="fake", tts_rate=tts_rate,
+                                             settings=dict(self.welcome_settings)))
         return hello
 
     def say(self, turn: int, index: int, pcm: bytes, rate: int = 16000, end: bool = True,
