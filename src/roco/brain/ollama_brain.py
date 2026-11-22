@@ -1,80 +1,60 @@
-"""The Ollama-backed :class:`~roco.brain.base.Brain`: persona, history and the tool-call loop.
+"""The Ollama backend of the brain: qwen2.5 on the PC, streamed, with native tools.
 
-One call to :meth:`OllamaBrain.respond`:
+Everything model-independent (persona, history, voice commands, time prefetch, reminder
+repair, barge-in) lives in :class:`roco.brain.core.ToolBrain`. This class runs the tool
+loop against Ollama: while the model asks for tools (at most ``llm.max_tool_rounds``
+rounds) it runs them and sends the results back as ``tool`` messages, a last round
+without tools forces a spoken answer, and the streamed text goes through
+:class:`EmotionTagParser` and the sentence splitter. Text tool calls written into the
+reply as JSON (a qwen2.5 habit) are recovered instead of being spoken.
 
-1. publishes ``State.THINKING``;
-2. sends system prompt + history + the user turn to Ollama (streamed, native tools);
-3. while the model asks for tools (at most ``llm.max_tool_rounds`` rounds), runs
-   them through :meth:`ToolRegistry.call` and sends the results back as ``tool``
-   messages; a last round without tools forces a spoken answer if the limit is hit;
-4. streams the answer through :class:`EmotionTagParser` (tag -> ``bus.set_emotion``)
-   and :class:`SentenceSplitter` (sentences -> ``on_sentence``);
-5. stores the user turn and the tag-free answer in the history.
-
-Any network or model failure becomes a short British apology instead of an exception.
-
-:meth:`OllamaBrain.respond_turn` adds barge-in support: a set ``cancel`` event stops the
-stream at the next chunk (closing the HTTP stream makes Ollama stop generating), skips
-the remaining tools and sentences, and stores what was said so far, so
-:meth:`OllamaBrain.amend_last_reply` can replace it with what was actually heard.
+On barge-in the stream is closed at the next chunk (Ollama stops generating). Network or
+model failures become :class:`OllamaError`; on its own the brain turns them into a short
+British apology, and under the :class:`~roco.brain.router.BrainRouter` they are raised so
+the router can answer on the other brain or say the offline line.
 """
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 import re
-import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from roco.brain.base import Brain, SentenceCallback, TurnHooks
+from roco.brain.core import (
+    ACTION_CLAIM,
+    APOLOGY_GENERIC,
+    APOLOGY_TANGLED,
+    REMINDER_REPAIR_FAILED,
+    REMINDER_REPAIR_NOTE,
+    REMINDER_REQUEST,
+    TIME_QUESTION,
+    Cancelled,
+    Reply,
+    ToolBrain,
+    TurnControl,
+)
 from roco.brain.emotion import EmotionTagParser
 from roco.brain.history import History
 from roco.brain.ollama import OllamaClient, OllamaError
-from roco.brain.sentences import FIRST_CLAUSE_MIN_CHARS, SentenceSplitter
-from roco.bus import Emotion, EventBus, State
+from roco.bus import EventBus
 from roco.config import Config
-from roco.paths import resolve
 from roco.personality import Personality
-from roco.tools.clock import describe_date, local_timezone, part_of_day
 from roco.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
 
-_turn_ids = itertools.count(1)
+__all__ = [
+    "ACTION_CLAIM", "APOLOGY_GENERIC", "APOLOGY_TANGLED", "APOLOGY_TIMEOUT",
+    "APOLOGY_UNREACHABLE", "REMINDER_REPAIR_FAILED", "REMINDER_REPAIR_NOTE",
+    "REMINDER_REQUEST", "TIME_QUESTION", "OllamaBrain", "apology_for", "create_brain",
+]
 
 APOLOGY_UNREACHABLE = "Sorry, I can't reach my brain at the moment. Is Ollama running?"
 APOLOGY_TIMEOUT = "Sorry, I'm thinking far too slowly just now. Could you try again in a moment?"
-APOLOGY_GENERIC = "Sorry, something went wrong in my head. Could you try that again?"
-
-# "What time is it?", "what's the time now", "tell me the time": a plain question about
-# the current time, answered from a prefetched get_current_time result.
-TIME_QUESTION = re.compile(
-    r"\b(what\s+time\s+is\s+it|what(?:'s|\s+is)\s+the\s+time|tell\s+me\s+the\s+time"
-    r"|the\s+time\s+now|current\s+time)\b",
-    re.IGNORECASE,
-)
-# A reminder request answered with "I'll set it" but no set_reminder call: qwen2.5 does
-# this in savage/unhinged mode (the joke crowds out the tool call). Spec §2 hard rule:
-# never claim an action that didn't happen, so the brain repairs it (see _repair_reminder).
-REMINDER_REQUEST = re.compile(r"\b(remind\s+me|reminder)\b", re.IGNORECASE)
-ACTION_CLAIM = re.compile(
-    r"\b(i'?ve|i\s+have|i'?ll|i\s+will|all)\s+(set|added|created|scheduled|sorted|done)\b"
-    r"|\breminder(?:'s|\s+is)?\s+(set|added|created|scheduled)\b|\bdone\b"
-    r"|\bi'?ll\s+remind\s+you\b|\bgot\s+it\b|\bconsider\s+it\b",
-    re.IGNORECASE,
-)
-REMINDER_REPAIR_NOTE = (
-    "(Note from the system, not from {user}: you said you'd set that reminder but you "
-    "didn't call set_reminder. Call set_reminder now with the details {user} gave: "
-    "minutes_from_now for \"in ten minutes\", at for a clock time like \"at six\".)"
-)
-REMINDER_REPAIR_FAILED = "Actually, I didn't manage to set that reminder. Ask me again?"
-APOLOGY_TANGLED = "Sorry, I got a bit tangled up there. Could you ask me that again?"
 
 
 def apology_for(error: OllamaError, model: str) -> str:
@@ -88,118 +68,9 @@ def apology_for(error: OllamaError, model: str) -> str:
     return APOLOGY_GENERIC
 
 
-def _splitter(first: bool = True) -> SentenceSplitter:
-    """A short first chunk gets the voice going sooner (TTS time grows with length)."""
-    return SentenceSplitter(first_clause_min_chars=FIRST_CLAUSE_MIN_CHARS if first else None)
+class OllamaBrain(ToolBrain):
+    backend_errors = (OllamaError,)
 
-
-class _Cancelled(Exception):
-    """The turn's cancel event was set (barge-in)."""
-
-
-_NO_HOOKS = TurnHooks()
-
-
-class _Turn:
-    """Per-call cancel event and hooks, passed down the tool loop."""
-
-    def __init__(self, cancel: threading.Event | None, hooks: TurnHooks | None) -> None:
-        self.cancel = cancel
-        self.hooks = hooks or _NO_HOOKS
-
-    @property
-    def cancelled(self) -> bool:
-        return self.cancel is not None and self.cancel.is_set()
-
-    def check(self) -> None:
-        if self.cancelled:
-            raise _Cancelled
-
-    def token(self) -> None:
-        if self.hooks.on_token is not None:
-            try:
-                self.hooks.on_token()
-            except Exception:
-                log.exception("on_token hook failed")
-
-    def tools(self, names: list[str]) -> None:
-        if self.hooks.on_tools is not None:
-            try:
-                self.hooks.on_tools(names)
-            except Exception:
-                log.exception("on_tools hook failed")
-
-
-class _Reply:
-    """Collects one reply: publishes the emotion first, then delivers sentences."""
-
-    def __init__(
-        self,
-        bus: EventBus,
-        on_sentence: SentenceCallback | None,
-        cancel: threading.Event | None = None,
-        transform: Callable[[str], str] | None = None,
-    ) -> None:
-        self._bus = bus
-        self._on_sentence = on_sentence
-        self._cancel = cancel
-        self._transform = transform
-        self._splitter = _splitter()
-        self._emotion: Emotion | None = None
-        self.first_emotion: Emotion | None = None
-        self.sentences: list[str] = []
-
-    @property
-    def text(self) -> str:
-        return " ".join(self.sentences)
-
-    def set_emotion(self, emotion: Emotion | None) -> None:
-        """Publish ``emotion``; a missing tag means neutral, unless one is already shown."""
-        if emotion is None:
-            if self._emotion is not None:
-                return
-            emotion = Emotion.NEUTRAL
-        if emotion != self._emotion:
-            self._emotion = emotion
-            self.first_emotion = self.first_emotion or emotion
-            self._bus.set_emotion(emotion)
-
-    def feed(self, text: str) -> None:
-        for sentence in self._splitter.feed(text):
-            self._deliver(sentence)
-
-    def flush(self) -> None:
-        rest = self._splitter.flush()
-        if rest:
-            self._deliver(rest)
-
-    def drop_partial(self) -> None:
-        """Forget an unfinished sentence (the stream broke mid-way)."""
-        self._splitter = _splitter(first=not self.sentences)
-
-    def say(self, sentence: str) -> None:
-        """Deliver a whole sentence of our own (apologies)."""
-        self._deliver(sentence)
-
-    def _deliver(self, sentence: str) -> None:
-        if self._cancel is not None and self._cancel.is_set():
-            return  # barge-in: nothing more is said or stored
-        if self._transform is not None:
-            sentence = self._transform(sentence)
-            if not sentence.strip():
-                return  # the personality filter dropped it (e.g. a copied example line)
-        if self._emotion is None:
-            self.set_emotion(None)
-        self.sentences.append(sentence)
-        if self._on_sentence is None:
-            return
-        try:
-            self._on_sentence(sentence)
-        except Exception:
-            log.exception("on_sentence callback failed")
-
-
-class OllamaBrain(Brain):
     def __init__(
         self,
         config: Config,
@@ -212,13 +83,15 @@ class OllamaBrain(Brain):
         history_tags: bool = True,
         history_tools: bool = True,
         personality: Personality | None = None,
+        raise_backend_errors: bool = False,
     ) -> None:
-        self.config = config
-        self.bus = bus
-        self.registry = registry or ToolRegistry()
+        super().__init__(
+            config, bus, registry, history=history, clock=clock, history_tags=history_tags,
+            history_tools=history_tools, personality=personality,
+            raise_backend_errors=raise_backend_errors,
+        )
         llm = config.section("llm")
         self.model = str(llm.get("model", "qwen2.5:7b"))
-        self.max_tool_rounds = max(0, int(llm.get("max_tool_rounds", 5)))
         self.client = client or OllamaClient(
             str(llm.get("host", "http://localhost:11434")),
             self.model,
@@ -228,89 +101,15 @@ class OllamaBrain(Brain):
             extra_options=llm.get("options") or None,
             timeout_s=float(llm.get("timeout_s", 120)),
         )
-        if history is None:
-            hist_cfg = config.section("history")
-            persist = bool(hist_cfg.get("persist"))
-            path = resolve(hist_cfg.get("file", "history.json")) if persist else None
-            history = History(int(hist_cfg.get("max_turns", 12)), path)
-        self.history = history
-        self._tz = local_timezone(config)
-        self._clock = clock or (lambda: datetime.now(self._tz))
-        # Send past replies with their tag and tool trace (see roco.brain.history).
-        self.history_tags = history_tags
-        self.history_tools = history_tools
-        # Settings, company and voice commands (roco.personality); renders the prompt.
-        self.personality = personality or Personality.from_config(config)
-        self._lock = threading.Lock()
 
-    # ------------------------------------------------------------------ Brain API
-    def respond(self, text: str, on_sentence: SentenceCallback | None = None) -> str:
-        return self.respond_turn(text, on_sentence)
+    @property
+    def name(self) -> str:
+        return f"ollama:{self.model}"
 
-    def respond_turn(
-        self,
-        text: str,
-        on_sentence: SentenceCallback | None = None,
-        *,
-        cancel: threading.Event | None = None,
-        hooks: TurnHooks | None = None,
-    ) -> str:
-        ctl = _Turn(cancel, hooks)
-        with self._lock:
-            turn = next(_turn_ids)
-            self.bus.set_state(State.THINKING)
-            reply = _Reply(self.bus, on_sentence, cancel, self.personality.filter_sentence)
-            text = (text or "").strip()
-            if not text:
-                return ""
-            started = self._clock()
-            # "ROCO, unhinged mode", "Yousaf's here": applied at once, no model call.
-            command = self.personality.handle_command(text, self._user_name())
-            if command is not None:
-                reply.set_emotion(command.emotion)
-                reply.say(command.reply)
-                self.history.add_turn(text, reply.text, command.emotion.value, [], at=started)
-                return reply.text
-            past = self.history.for_model(
-                tags=self.history_tags, tools=self.history_tools, now=started
-            )
-            messages = [self._system_message(text), *past]
-            # No current time is added here: tried after the user text, it made qwen2.5 skip
-            # tools far more often (2/4 vs 4/4 scenario runs). Time comes from the tool.
-            messages.append({"role": "user", "content": text})
-            base = len(messages)
-            messages.extend(self._prefetch_time(text, turn))
-            try:
-                ctl.check()
-                trace = self._converse(messages, reply, turn, ctl, trace_from=base)
-            except _Cancelled:
-                # Keep what was said and the tool calls already made; the server then
-                # replaces the reply with what was heard (amend_last_reply).
-                log.info("[turn %d] cancelled after %d sentence(s)", turn, len(reply.sentences))
-                emotion = reply.first_emotion.value if reply.first_emotion else None
-                self.history.add_turn(text, reply.text, emotion, messages[base:], at=started)
-                return reply.text
-            except OllamaError as exc:
-                log.warning("[turn %d] Ollama failed (%s): %s", turn, exc.kind, exc)
-                return self._apologise(reply, apology_for(exc, self.model))
-            except Exception:
-                log.exception("[turn %d] Unexpected brain failure", turn)
-                return self._apologise(reply, APOLOGY_GENERIC)
-
-            if not reply.sentences:
-                log.warning("[turn %d] Model returned no text", turn)
-                return self._apologise(reply, APOLOGY_TANGLED)
-            if self._claims_unset_reminder(text, reply.text, trace):
-                try:
-                    trace = trace + self._repair_reminder(messages, reply, turn, ctl)
-                except _Cancelled:
-                    pass
-                except OllamaError as exc:
-                    log.warning("[turn %d] reminder repair failed: %s", turn, exc)
-                    reply.say(REMINDER_REPAIR_FAILED)
-            emotion = reply.first_emotion.value if reply.first_emotion else None
-            self.history.add_turn(text, reply.text, emotion, trace, at=started)
-            return reply.text
+    def apology_for(self, error: BaseException) -> str:
+        if isinstance(error, OllamaError):
+            return apology_for(error, self.model)
+        return APOLOGY_GENERIC
 
     def warm_up(self) -> bool:
         """Send the real system prompt and tools once, before Adam's first question.
@@ -319,9 +118,8 @@ class OllamaBrain(Brain):
         its first token, later ones ~1 s (prompt processing of ~1,700 tokens + GPU warm-up).
         Ollama then reuses the cached prompt prefix. Best effort: False on failure.
         """
-        allowed = self.personality.allowed_tool
-        tools = [s for s in self.registry.schemas() if allowed(s["function"]["name"])] or None
-        messages = [self._system_message(), {"role": "user", "content": "Hi."}]
+        tools = self.allowed_schemas() or None
+        messages = [self.system_message(), {"role": "user", "content": "Hi."}]
         try:
             t0 = time.monotonic()
             self.client.warm_up(messages, tools)
@@ -331,108 +129,23 @@ class OllamaBrain(Brain):
         log.info("LLM warmed up in %d ms", (time.monotonic() - t0) * 1000)
         return True
 
-    def amend_last_reply(self, heard: str) -> None:
-        with self._lock:
-            self.history.amend_last_reply((heard or "").strip())
-
-    def reset(self) -> None:
-        with self._lock:
-            self.history.clear()
-
     def close(self) -> None:
         self.client.close()
-
-    # ------------------------------------------------------------------ internals
-    def _claims_unset_reminder(
-        self, text: str, said: str, trace: list[dict[str, Any]]
-    ) -> bool:
-        if "set_reminder" not in self.registry or not REMINDER_REQUEST.search(text):
-            return False
-        if not ACTION_CLAIM.search(said):
-            return False
-        return not _tool_succeeded(trace, "set_reminder")
-
-    def _repair_reminder(
-        self, messages: list[dict[str, Any]], reply: _Reply, turn: int, ctl: _Turn
-    ) -> list[dict[str, Any]]:
-        """Make an "I'll set it" true: one silent tool round asking for set_reminder.
-
-        Nothing from the repair round is spoken; if the reminder still isn't set, ROCO
-        owns up. Only the tool call and its result are kept for the history.
-        """
-        log.warning("[turn %d] claimed a reminder without set_reminder; repairing", turn)
-        repair = [
-            *messages,
-            {"role": "assistant", "content": reply.text},
-            {"role": "user", "content": REMINDER_REPAIR_NOTE.format(user=self._user_name())},
-        ]
-        silent = _Reply(self.bus, None, ctl.cancel)
-        done = self._converse(repair, silent, turn, ctl)
-        kept = [m for m in done if m.get("tool_calls") or m.get("role") == "tool"]
-        if not _tool_succeeded(kept, "set_reminder"):
-            reply.say(REMINDER_REPAIR_FAILED)
-        return kept
-
-    def _prefetch_time(self, text: str, turn: int) -> list[dict[str, Any]]:
-        """For a plain "what time is it?", call get_current_time before the model does.
-
-        Measured on qwen2.5:7b: later in a conversation it often works the time out from
-        old reminder results ("at 11:58, in 20 minutes") and states a wrong one instead of
-        calling the tool. Putting the time in the prompt fixed that but made it skip
-        other tools ("I've set a reminder" with no set_reminder call). A real tool
-        exchange added here does neither, and saves a model round.
-        """
-        if not TIME_QUESTION.search(text) or "get_current_time" not in self.registry:
-            return []
-        result = self.registry.call("get_current_time", {})
-        log.debug("[turn %d] prefetched get_current_time -> %s", turn, result)
-        call = {"function": {"name": "get_current_time", "arguments": {}}}
-        return [
-            {"role": "assistant", "content": "", "tool_calls": [call]},
-            {"role": "tool", "content": result, "tool_name": "get_current_time"},
-        ]
-
-    def _system_message(self, text: str = "") -> dict[str, str]:
-        assistant = self.config.section("assistant")
-        # The user text only switches the prompt to "no jokes" on genuine distress.
-        prompt = self.personality.system_prompt(
-            str(assistant.get("name", "ROCO")), self._user_name(), text
-        )
-        now = self._clock()
-        # Date and part of day only: the exact time comes from get_current_time, whose answer
-        # is spoken-style (a 7B model misreads "19:58" as "half past seven" when it is in the
-        # prompt). The part of day stops "Morning, Adam" at half ten at night and invented
-        # "it's three in the morning" lines.
-        prompt += (
-            f"\n\nToday is {describe_date(now)}, and it's {part_of_day(now)}. Match greetings "
-            "and your mood to that. For the exact time, call get_current_time."
-        )
-        return {"role": "system", "content": prompt}
-
-    def _user_name(self) -> str:
-        return str(self.config.section("assistant").get("user_name", "Adam"))
-
-    def _apologise(self, reply: _Reply, apology: str) -> str:
-        reply.drop_partial()
-        self.bus.set_emotion(Emotion.SAD)
-        reply.say(apology)
-        return reply.text
 
     def _converse(
         self,
         messages: list[dict[str, Any]],
-        reply: _Reply,
+        reply: Reply,
         turn: int,
-        ctl: _Turn | None = None,
+        ctl: TurnControl | None = None,
         trace_from: int | None = None,
     ) -> list[dict[str, Any]]:
         """Run the tool loop. Returns this turn's tool-call and tool-result messages
         (from ``trace_from``, default: what this call adds)."""
-        ctl = ctl or _Turn(None, None)
+        ctl = ctl or TurnControl(None, None)
         start = len(messages) if trace_from is None else trace_from
         # Tools that read Adam's data aloud are hidden while guests are in the room.
-        allowed = self.personality.allowed_tool
-        schemas = [s for s in self.registry.schemas() if allowed(s["function"]["name"])] or None
+        schemas = self.allowed_schemas() or None
         retried = False
         round_no = 0
         while round_no <= self.max_tool_rounds:
@@ -467,12 +180,7 @@ class OllamaBrain(Brain):
                         {"role": "tool", "content": "Cancelled: not run.", "tool_name": name or ""}
                     )
                     continue
-                if name is None:
-                    result = "Error: malformed tool call (no function name)."
-                elif not allowed(name):
-                    result = "Error: not available while other people are in the room."
-                else:
-                    result = self.registry.call(name, arguments)
+                result = self.run_tool(name, arguments)
                 log.debug("[turn %d] tool %s(%s) -> %.200s", turn, name, _short(arguments), result)
                 messages.append({"role": "tool", "content": result, "tool_name": name or ""})
             ctl.check()
@@ -482,10 +190,10 @@ class OllamaBrain(Brain):
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
-        reply: _Reply,
-        ctl: _Turn | None = None,
+        reply: Reply,
+        ctl: TurnControl | None = None,
     ) -> tuple[str, list[Any]]:
-        ctl = ctl or _Turn(None, None)
+        ctl = ctl or TurnControl(None, None)
         parser = EmotionTagParser()
         raw: list[str] = []
         tool_calls: list[Any] = []
@@ -528,7 +236,7 @@ class OllamaBrain(Brain):
                 close()  # closes the HTTP response early: Ollama stops generating
         if ctl.cancelled:
             reply.drop_partial()
-            raise _Cancelled
+            raise Cancelled
         if not parser.decided:
             push(parser.flush())
         if held:
@@ -540,6 +248,7 @@ class OllamaBrain(Brain):
         # Text spoken before a tool call ("Let me check.") is delivered now, in order.
         reply.flush()
         return "".join(raw), tool_calls
+
 
 
 _TOOL_CALL_TAGS = re.compile(r"</?tool_call>", re.IGNORECASE)
@@ -595,15 +304,6 @@ def _call_parts(call: Any) -> tuple[str | None, dict[str, Any] | str | None]:
     if not isinstance(name, str) or not name.strip():
         return None, None
     return name.strip(), function.get("arguments")
-
-
-def _tool_succeeded(messages: list[dict[str, Any]], name: str) -> bool:
-    return any(
-        m.get("role") == "tool"
-        and m.get("tool_name") == name
-        and not str(m.get("content", "")).startswith(("Error", "Cancelled"))
-        for m in messages
-    )
 
 
 def _sanitize_call(call: Any) -> dict[str, Any]:

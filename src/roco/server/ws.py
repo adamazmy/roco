@@ -45,9 +45,12 @@ def run_server(cfg: Config, stop: threading.Event | None = None,
         except BrainUnavailable as exc:
             print(exc)
             return 1
-        print("Waiting for Ollama to load the model...")
-        if not ctx.wait_until_ready():
-            print("The model is still loading; the first answer may be slow.")
+        if ctx.cloud_ready():
+            print("Claude brain ready; the local fallback model loads in the background.")
+        else:
+            print("Waiting for Ollama to load the model...")
+            if not ctx.wait_until_ready():
+                print("The model is still loading; the first answer may be slow.")
     try:
         server = make_server(ctx, host, port, stop)
     except OSError as exc:

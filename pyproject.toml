@@ -80,6 +80,7 @@ addopts = "-ra"
 timeout = 30
 markers = [
     "ollama: needs a real Ollama server (skipped in CI)",
+    "cloud: calls the real Claude API with your key, costs money (skipped in CI)",
     "hardware: needs a mic, speaker, display or servos (skipped in CI)",
 ]
 

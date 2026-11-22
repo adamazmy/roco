@@ -183,14 +183,30 @@ how much roasting is allowed, what ROCO is allowed to discuss in front of them.
 
 - **Pi (body client):** mic capture, wake word, VAD, echo cancellation, audio playback,
   hologram face rendering, servos, light camera tracking (face/hand position), sensors
-- **PC (brain server):** speech-to-text (faster-whisper), Ollama LLM (qwen2.5:7b), TTS,
-  vision model, long-term memory, calendar/email tools, person recognition
+- **PC (brain server):** speech-to-text (faster-whisper), the brain (Claude API by default,
+  local Ollama qwen2.5:7b as its fallback), TTS, vision model, long-term memory,
+  calendar/email tools, person recognition. Speech-to-text and the voice always stay local.
 - The body and brain talk over a **WebSocket** on the LAN, or over Tailscale when away from home
 - The body client must also run on Windows, so the whole robot can be developed on the PC
-- **Fallback chain:** PC brain → Claude API direct from the Pi (with whisper tiny.en on the Pi for
-  speech-to-text) → "my brain's offline" in a canned voice line. ROCO says which brain it's on when
-  it falls back. (An on-Pi LLM comes back if the Pi is upgraded to 8GB.)
-- **Optional escalation:** "let me think harder" sends hard questions to Claude
+- **Brain on the PC (decided 2026-11-22):** Claude is the default brain for quality and tool
+  reliability: Claude Haiku for normal turns, a larger Claude model (Sonnet) when Adam asks
+  her to think harder ("think harder", "take your time", "step by step"). Local Ollama
+  answers when Claude is not an option: no API key, an API error or timeout (retried after a
+  minute), no internet, the budget spent, or **local-only mode**. Both brains share the
+  history, the persona and every tool, so a switch mid-conversation keeps the thread.
+- **Local-only (privacy) mode:** "ROCO, local only" / "go private" by voice, "cloud back on"
+  to undo; or `brain.local_only: true` in the config (then it cannot be undone by voice).
+  While it is on, nothing goes to the cloud. It survives a restart.
+- **Cloud budget:** £0.20 a day and £5 a month by default (`cloud.budget`), counted from the
+  real token counts of every Claude call (cache reads and writes included; prices in USD,
+  converted at `usd_to_gbp`). Past 80 % of the daily cap ROCO mentions it once that day; at
+  either cap she runs locally until local midnight (or the 1st of next month) and says so.
+  `roco cloud-usage` shows today's and this month's spend against the caps.
+- **Fallback chain:** PC brain (Claude → local Ollama) → when the PC is unreachable, Claude
+  API direct from the Pi (with whisper tiny.en on the Pi for speech-to-text) → "my brain's
+  offline" in a canned voice line, also played when both of the PC's brains are down.
+  ROCO says which brain she is on whenever it changes. (An on-Pi LLM comes back if the Pi is
+  upgraded to 8GB.)
 - **Event bus** connects everything; every feature is a module
 
 ## 10. Privacy and trust
@@ -198,7 +214,8 @@ how much roasting is allowed, what ROCO is allowed to discuss in front of them.
 - A mute command (and later a physical mute switch with LED) cuts the mic and camera
 - Camera frames are processed on-device, never stored or uploaded
 - Face/voice embeddings are local only, deletable with "forget me"
-- Says out loud when it uses the cloud; logs cloud spend
+- Says out loud which brain it is on when that changes; logs cloud spend and caps it
+- Local-only mode keeps every conversation on the PC
 - Guest mode protects Adam's data in front of other people
 
 ## 11. Performance targets

@@ -89,6 +89,8 @@ class _Turn:
     finished: bool = False  # the brain returned and the turn is in its history
     heard: str | None = None  # from playback_done after an interrupt
     amended: bool = False
+    echo: bool = False  # interrupt{reason: "echo"}: the turn was ROCO's own voice
+    asked: str | None = None  # the text the brain was given
     seq: int = 0
 
 
@@ -187,7 +189,7 @@ class Session:
         try:
             self._send(Welcome(
                 protocol=PROTOCOL_VERSION,
-                brain=self.ctx.brain_name,
+                brain=self.ctx.current_brain_name(),
                 tts_rate=self.ctx.tts_rate,
                 session=self.session_id,
                 settings=self.ctx.settings_snapshot(),
@@ -316,6 +318,8 @@ class Session:
         if st is None:
             return
         st.cancel.set()
+        if msg.reason == "echo":
+            st.echo = True  # the worker removes it from the history (it owns the brain)
         if st.latency is not None:
             st.latency.info["interrupted"] = msg.reason
         log.info("turn %d interrupted (%s)", msg.turn, msg.reason)
@@ -368,6 +372,14 @@ class Session:
                         self._recent.popitem(last=False)
 
     def _apply_amends(self) -> None:
+        for old in list(self._recent.values()):
+            if old.echo and old.finished and not old.amended and old.asked:
+                old.amended = True
+                log.info("turn %d was an echo of ROCO: removed from the history", old.turn)
+                try:
+                    self.ctx.brain.forget_turn(old.asked)
+                except Exception:
+                    log.exception("forget_turn failed")
         st = self._last_answered
         if st is None or st.amended or st.heard is None or not st.finished:
             return
@@ -394,7 +406,7 @@ class Session:
             self._send(Announce(turn=st.turn, text=text))
             self._speak_lines(st, [text])
             if not st.cancel.is_set():
-                self._send(TurnDone(turn=st.turn, text=text, brain=self.ctx.brain_name))
+                self._send(TurnDone(turn=st.turn, text=text, brain=self.ctx.current_brain_name()))
                 with self._lock:
                     self._unplayed[st.turn] = time.monotonic() + PLAYBACK_WAIT_S
         except ConnectionClosed:
@@ -426,21 +438,22 @@ class Session:
         if st.cancel.is_set():
             return
         if not text:
-            self._send(TurnDone(turn=st.turn, text="", brain=self.ctx.brain_name,
-                                stages=lat.stages()))
+            self._send(TurnDone(turn=st.turn, text="", stages=lat.stages(),
+                                brain=self.ctx.current_brain_name()))
             self._send(StateChange(state="idle", turn=st.turn))
             return
         reply = self._answer(st, text, lat)
+        brain = self.ctx.current_brain_name()  # the router may have switched brains
         if st.cancel.is_set():
             lat.info.setdefault("interrupted", "cancelled")
         else:
-            self._send(TurnDone(turn=st.turn, text=reply, brain=self.ctx.brain_name,
+            self._send(TurnDone(turn=st.turn, text=reply, brain=brain,
                                 stages=lat.stages()))
             with self._lock:
                 self._unplayed[st.turn] = time.monotonic() + PLAYBACK_WAIT_S
         log.info("turn %d: ROCO said %r", st.turn, reply)
         self.latency.turn_done(lat, reply_chars=len(reply), tools=st.tools,
-                               fillers=list(st.fillers), brain=self.ctx.brain_name)
+                               fillers=list(st.fillers), brain=brain)
 
     def _answer(self, st: _Turn, text: str, lat: TurnLatency) -> str:
         speech = threading.Thread(target=self._speech_loop, args=(st, lat),
@@ -460,6 +473,7 @@ class Session:
 
         hooks = TurnHooks(on_token=lambda: lat.mark("first_token"), on_tools=on_tools)
         self._answering = st
+        st.asked = text
         reply = ""
         try:
             reply = self.ctx.brain.respond_turn(text, on_sentence, cancel=st.cancel, hooks=hooks)

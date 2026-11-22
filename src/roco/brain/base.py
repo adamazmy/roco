@@ -86,6 +86,13 @@ class Brain(ABC):
         Default: no-op, for brains without a history.
         """
 
+    def forget_turn(self, user_text: str) -> None:
+        """Remove the exchange that started with ``user_text`` from the history: the body
+        found that turn was ROCO's own voice coming back (``interrupt{reason: "echo"}``).
+
+        Default: no-op, for brains without a history.
+        """
+
     @abstractmethod
     def reset(self) -> None:
         """Forget the conversation history (and its persisted copy)."""

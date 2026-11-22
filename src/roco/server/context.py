@@ -65,6 +65,19 @@ class BrainContext:
     _closers: list[Callable[[], None]] = field(default_factory=list)
     llm_preload: threading.Thread | None = None
 
+    def current_brain_name(self) -> str:
+        """The brain answering now (``claude:...`` / ``ollama:...``: the router switches)."""
+        name = getattr(self.brain, "active_name", None)
+        return name if isinstance(name, str) and name else self.brain_name
+
+    def cloud_ready(self) -> bool:
+        """True when the router will answer on Claude, so the local model can load later."""
+        check = getattr(self.brain, "cloud_available", None)
+        try:
+            return bool(check()) if callable(check) else False
+        except Exception:
+            return False
+
     def wait_until_ready(self, timeout: float = 120.0) -> bool:
         """Wait for the background Ollama preload (a cold 7B load takes ~20 s).
         True when loaded (or nothing to wait for)."""
@@ -196,10 +209,17 @@ def create_brain_context(
         from roco.brain.factory import create_brain
 
         brain = create_brain(cfg, bus)
+        warm_cloud = getattr(brain, "warm_cloud", None)
+        if warm_up and callable(warm_cloud):  # Claude answers before Ollama is loaded
+            threading.Thread(target=warm_cloud, name="roco-cloud-warm-up", daemon=True).start()
     if token is None:
         token = load_or_create_token(resolve(cfg.get_path("link.token_file", "link_token")))
+    name = getattr(brain, "name", None)
     model = getattr(brain, "model", None)
-    brain_name = f"ollama:{model}" if model else type(brain).__name__
+    if isinstance(name, str) and name:
+        brain_name = name
+    else:
+        brain_name = f"ollama:{model}" if model else type(brain).__name__
     latency = cfg.get_path("server.latency_log", "latency.jsonl")
     return BrainContext(
         cfg=cfg,

@@ -53,6 +53,8 @@ class ClaudeReply:
     cancelled: bool = False
     first_text_ms: int | None = None
     total_ms: int | None = None
+    # The final SDK message (content blocks, tool_use included); None when cancelled.
+    message: Any = None
 
 
 class ClaudeClient:
@@ -151,6 +153,24 @@ class ClaudeClient:
 
         Returns the full text. Raises :class:`CloudPermanentError` or
         :class:`CloudUnavailableError`; every call (failed ones too) is logged.
+        See :meth:`stream_message` for the deadlines.
+        """
+        return self.stream_message(self.request_params(system, messages), on_text, cancel)
+
+    def stream_message(
+        self,
+        params: dict[str, Any],
+        on_text: TextCallback,
+        cancel: threading.Event | None = None,
+        *,
+        purpose: str = "fallback",
+        first_text_timeout_s: float | None = None,
+    ) -> ClaudeReply:
+        """Stream one request made of raw Messages API ``params`` (tools, cache_control...).
+
+        Text deltas go to ``on_text``; :attr:`ClaudeReply.message` is the final message, so
+        a caller can read ``tool_use`` blocks and the stop reason. ``purpose`` is written
+        to the usage log ("fallback" on the body, "brain" on the PC brain server).
 
         The request runs on a worker thread and this thread waits with real deadlines:
         no text within ``first_text_timeout_s`` (or the whole reply past
@@ -168,7 +188,10 @@ class ClaudeClient:
         events: queue.Queue[tuple[str, Any]] = queue.Queue()
         abandon = threading.Event()
         holder: dict[str, Any] = {}
-        params = self.request_params(system, messages)
+        model = str(params.get("model", self.model))
+        first_limit = self.first_text_timeout_s if first_text_timeout_s is None else float(
+            first_text_timeout_s)
+        final: Any = None
 
         def worker() -> None:
             try:
@@ -196,7 +219,7 @@ class ClaudeClient:
                     abandon.set()
                     usage = _snapshot_usage(holder.get("stream"))
                     break
-                limit = self.first_text_timeout_s if first_text_ms is None else self.total_timeout_s
+                limit = first_limit if first_text_ms is None else self.total_timeout_s
                 limit = min(limit, self.total_timeout_s)
                 remaining = wall_start + limit - time.monotonic()
                 if remaining <= 0:
@@ -212,6 +235,7 @@ class ClaudeClient:
                         raise value
                     raise _classify(value) from value
                 if kind == "done":
+                    final = value
                     usage = Usage.from_api(getattr(value, "usage", None))
                     stop_reason = getattr(value, "stop_reason", None)
                     break
@@ -229,19 +253,21 @@ class ClaudeClient:
                 error = f"{type(exc.__cause__).__name__}: {exc.__cause__}"
             else:
                 error = str(exc)
-            self._log(usage, ok=False, error=error, first=first_text_ms, total=elapsed_ms())
+            self._log(model, purpose, usage, ok=False, error=error, first=first_text_ms,
+                      total=elapsed_ms())
             raise
 
         total_ms = elapsed_ms()
-        self._log(usage, ok=True, error="cancelled" if cancelled else None,
+        self._log(model, purpose, usage, ok=True, error="cancelled" if cancelled else None,
                   first=first_text_ms, total=total_ms)
-        return ClaudeReply("".join(parts), usage, stop_reason, cancelled, first_text_ms, total_ms)
+        return ClaudeReply("".join(parts), usage, stop_reason, cancelled, first_text_ms, total_ms,
+                           final)
 
-    def _log(self, usage: Usage, *, ok: bool, error: str | None, first: int | None,
-             total: int) -> None:
+    def _log(self, model: str, purpose: str, usage: Usage, *, ok: bool, error: str | None,
+             first: int | None, total: int) -> None:
         if self.usage_log is not None:
-            self.usage_log.record(self.model, usage, ok=ok, error=error, first_text_ms=first,
-                                  total_ms=total)
+            self.usage_log.record(model, usage, ok=ok, error=error, first_text_ms=first,
+                                  total_ms=total, purpose=purpose)
 
 
 def _snapshot_usage(stream: Any) -> Usage:

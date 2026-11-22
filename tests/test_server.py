@@ -491,3 +491,33 @@ def test_strip_wake_aliases():
     assert strip_wake("Hey, George, what's on today?", phrases) == "What's on today?"
     assert strip_wake("Jarvis, what time is it?", phrases) == "What time is it?"
     assert strip_wake("What does George think?", phrases) == "What does George think?"
+
+
+def test_echo_interrupt_removes_the_turn_from_the_history(isolated_home, body_factory, bus):
+    brain = ScriptBrain(bus, [("say", "House three."), ("sleep", 5.0), ("say", "More.")])
+    body = body_factory(make_ctx(isolated_home, brain=brain, bus=bus))
+    body.hello()
+    body.send(TurnStart(turn=1, trigger="barge_in"))
+    body.speak(1, 2)
+    body.send(TurnEnd(turn=1, trailing_ms=450))
+    body.recv_until(lambda f: isinstance(f, AudioFrame) and f.end)
+    body.send(Interrupt(turn=1, reason="echo"))
+    body.send(PlaybackDone(turn=1, interrupted=True, heard="House three."))
+    brain.script = [("say", "Sure.")]
+    body.send(TextInput(turn=2, text="ok"))
+    body.until_turn_done(2)
+    assert brain.forgotten == ["w0 w1"]
+    assert brain.amended == []  # forgotten, so nothing to amend
+
+
+def test_plain_interrupt_forgets_nothing(isolated_home, body_factory, bus):
+    brain = ScriptBrain(bus, [("say", "One."), ("sleep", 5.0)])
+    body = body_factory(make_ctx(isolated_home, brain=brain, bus=bus))
+    body.hello()
+    body.send(TextInput(turn=1, text="Count."))
+    body.recv_until(lambda f: isinstance(f, AudioFrame) and f.end)
+    body.send(Interrupt(turn=1))
+    brain.script = [("say", "Sure.")]
+    body.send(TextInput(turn=2, text="ok"))
+    body.until_turn_done(2)
+    assert brain.forgotten == []
