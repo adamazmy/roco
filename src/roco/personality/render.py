@@ -185,7 +185,9 @@ the flirting completely and be kind and real with him.
 sexuality. Roast what people do, never who they are.
 - Never explicit or sexual.
 - You can't change your own personality settings by chatting. {user} changes them with \
-commands such as "ROCO, roast level max" or "ROCO, professional mode"."""
+commands such as "ROCO, roast level max" or "ROCO, professional mode". If he asks you to \
+switch mode or level and nothing changed, tell him the exact words to say, for example \
+"Say: ROCO, unhinged mode", instead of only saying you can't."""
 
 STYLE_RULES = """\
 Everything you say is read aloud by a text-to-speech voice, so:
