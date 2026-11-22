@@ -102,6 +102,9 @@ class ActionCheck:
     claim: re.Pattern[str]
     note: str
     failed: str
+    # Repair only when the tool was never called. For cancel_reminder a failed call was
+    # already reported, and a second, automatic try could cancel the wrong reminder.
+    only_if_never_called: bool = False
 
 
 ACTION_CHECKS = (
@@ -112,7 +115,7 @@ ACTION_CHECKS = (
     ),
     ActionCheck(
         "cancel_reminder", lambda t: bool(CANCEL_REQUEST.search(t)),
-        CANCEL_CLAIM, CANCEL_REPAIR_NOTE, CANCEL_REPAIR_FAILED,
+        CANCEL_CLAIM, CANCEL_REPAIR_NOTE, CANCEL_REPAIR_FAILED, only_if_never_called=True,
     ),
 )
 
@@ -509,8 +512,11 @@ class ToolBrain(Brain):
     ) -> ActionCheck | None:
         """The action check a reply fails: it claims the action but the tool never ran."""
         for check in ACTION_CHECKS:
-            if (check.tool in self.registry and check.request(text)
-                    and check.claim.search(said) and not tool_succeeded(trace, check.tool)):
+            if not (check.tool in self.registry and check.request(text)
+                    and check.claim.search(said)):
+                continue
+            done = tool_called if check.only_if_never_called else tool_succeeded
+            if not done(trace, check.tool):
                 return check
         return None
 
@@ -659,10 +665,22 @@ def history_from_config(config: Config) -> History:
     return History(int(hist_cfg.get("max_turns", 12)), path)
 
 
+NOT_RUN = "Cancelled: not run."  # the result of a call skipped by a barge-in
+
+
+def tool_called(messages: list[dict[str, Any]], name: str) -> bool:
+    return any(
+        m.get("role") == "tool" and m.get("tool_name") == name
+        and not str(m.get("content", "")).startswith(NOT_RUN)
+        for m in messages
+    )
+
+
 def tool_succeeded(messages: list[dict[str, Any]], name: str) -> bool:
+    # "Cancelled reminder 2: ..." is cancel_reminder succeeding, not a skipped call.
     return any(
         m.get("role") == "tool"
         and m.get("tool_name") == name
-        and not str(m.get("content", "")).startswith(("Error", "Cancelled"))
+        and not str(m.get("content", "")).startswith(("Error", NOT_RUN))
         for m in messages
     )

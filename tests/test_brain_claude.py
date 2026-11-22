@@ -701,3 +701,33 @@ def test_forced_calendar_day_comes_from_the_question(ollama, data_registry):
         "get_events", {"day": "2026-11-27"})
     assert brain._forced_call(("get_events",), "anything in my diary") == (
         "get_events", {"day": "today"})
+
+
+@pytest.mark.parametrize("result", ["Cancelled reminder 1: ring the garage.",
+                                    "Error: no reminder number 7."])
+def test_a_called_cancel_is_never_repaired(ollama, result):
+    reg = ToolRegistry()
+    calls: list[int] = []
+
+    @reg.tool(description="Cancel a reminder.",
+              parameters={"type": "object", "properties": {"id": {"type": "integer"}},
+                          "required": ["id"]})
+    def cancel_reminder(id: int) -> str:
+        calls.append(id)
+        return result  # the real tool's wording on success starts with "Cancelled"
+
+    router, fake = make(ollama.url, reg, call(("cancel_reminder", {"id": 1})),
+                        say("[happy] Cancelled, it's gone."))
+    said, _ = run(router, "Cancel the garage one.")
+    assert said == ["Cancelled, it's gone."]
+    assert calls == [1] and len(fake.calls) == 2  # no repair round, nothing else cancelled
+
+
+def test_tool_succeeded_tells_a_cancelled_reminder_from_a_skipped_call():
+    from roco.brain.core import tool_called, tool_succeeded
+
+    ok = [{"role": "tool", "tool_name": "cancel_reminder", "content": "Cancelled reminder 2: x."}]
+    skipped = [{"role": "tool", "tool_name": "cancel_reminder", "content": "Cancelled: not run."}]
+    assert tool_succeeded(ok, "cancel_reminder") and tool_called(ok, "cancel_reminder")
+    assert not tool_succeeded(skipped, "cancel_reminder")
+    assert not tool_called(skipped, "cancel_reminder")
