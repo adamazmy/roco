@@ -266,3 +266,35 @@ def test_empty_reply_drains_immediately():
     p.finish(5)
     p.dispatch_pending()
     assert ("drained", 5) in ev.log
+
+
+def test_player_spoken_context_is_around_the_playhead():
+    p = Player(rate=16000)
+    for i, text in enumerate(["One.", "Two.", "Three.", "Four.", "Five."]):
+        p.set_text(1, i, text)
+        p.feed(1, i, bytes([1, 0]) * 2, 16000, end=True)
+    p.pull(6)  # sentences 0-2 heard, 3 next
+    assert p.spoken_context(1) == ["Two.", "Three.", "Four.", "Five."]
+    assert p.spoken_context(9) == []
+
+
+def test_echo_monitor_gate_learns_the_residual_and_passes_louder_speech():
+    np = pytest.importorskip("numpy")
+    mon = aec_mod.EchoMonitor(far_rms_min=100)
+    far = np.full(1280, 3000, dtype=np.int16)
+    residual = np.full(1280, 100, dtype=np.int16)
+    assert mon.near_end(6.0)  # nothing playing: no echo, anything may be Adam
+    mon.update(residual * 30, residual, far)
+    assert not mon.near_end(6.0)  # playback just started: not trusted yet
+    for _ in range(10):
+        mon.update(residual * 30, residual, far)
+    assert mon.near_end_db() == pytest.approx(0, abs=0.1)
+    assert not mon.near_end(6.0)
+    adam = np.full(1280, 400, dtype=np.int16)  # +12 dB over the residual
+    mon.update(adam * 10, adam, far)
+    assert mon.near_end(6.0)
+    assert mon.residual_floor == pytest.approx(100.0**2)  # Adam's frame was not learnt
+    silent = np.zeros(1280, dtype=np.int16)
+    for _ in range(5):
+        mon.update(residual, residual, silent)  # playback stopped: hangover, then free
+    assert mon.near_end_db() is None

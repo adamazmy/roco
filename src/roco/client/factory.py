@@ -50,9 +50,13 @@ def body_settings(cfg: Config) -> Any:
         endpoint=EndpointSettings.from_config(vad),
         followup_s=float(cfg.get_path("voice.followup_s", 5.0)),
         wake_threshold=float(cfg.get_path("voice.wake_word.threshold", 0.5)),
-        barge_in=BargeInMode(str(barge.get("mode", "speech"))),
+        barge_in=BargeInMode.parse(str(barge.get("mode", "speech"))),
         barge_threshold=float(barge.get("threshold", 0.6)),
-        barge_start_ms=float(barge.get("start_ms", 96)),
+        barge_start_ms=float(barge.get("start_ms", 128)),
+        echo_margin_db=float(barge.get("echo_margin_db", 3.0)),
+        echo_guard=bool(barge.get("echo_guard", True)),
+        preroll_ms=float(barge.get("preroll_ms", 800)),
+        wake_preroll_ms=float(cfg.get_path("voice.wake_word.preroll_ms", 1200)),
         min_erle_db=float(cfg.get_path("voice.aec.min_erle_db", 10.0)),
     )
 

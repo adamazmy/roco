@@ -232,8 +232,8 @@ def test_late_frames_of_a_cancelled_turn_are_dropped(rig):
 def test_barge_in_needs_the_wake_word_without_aec():
     r = Rig(aec_name="none")
     try:
-        assert r.body.barge_mode is BargeInMode.WAKE_WORD
-        assert r.hello.caps["barge_in"] == "wake_word"
+        assert r.body.barge_mode is BargeInMode.NAME
+        assert r.hello.caps["barge_in"] == "name"
         r.user_turn()
         r.reply(1)
         r.play(0.05)
@@ -261,7 +261,7 @@ def test_weak_echo_cancellation_falls_back_to_wake_word(capsys):
         r.user_turn()
         r.reply(1)
         r.play(0.5)
-        assert r.body.barge_mode is BargeInMode.WAKE_WORD
+        assert r.body.barge_mode is BargeInMode.NAME
         assert "wake word" in capsys.readouterr().out
     finally:
         r.close()
@@ -281,7 +281,7 @@ def test_barge_ins_without_words_fall_back_to_wake_word(rig):
         rig.brain.end.send(Transcript(turn=turn + 1, text=""))  # STT: no words
         if turn == 1:
             assert wait_for(lambda: rig.body._false_barges == 1)
-    assert wait_for(lambda: rig.body.barge_mode is BargeInMode.WAKE_WORD)
+    assert wait_for(lambda: rig.body.barge_mode is BargeInMode.NAME)
 
 
 def test_a_real_barge_in_resets_the_false_count(rig):
@@ -479,3 +479,122 @@ def test_no_offline_wav_keeps_the_old_silent_behaviour():
         assert r.body._offline_wav_played == set()
     finally:
         r.close()
+
+
+# --------------------------------------------------------------------------- echo guard
+TIME_REPLY = ("It's just gone half past three", "on Sunday afternoon.")
+
+
+def _barge_then_transcript(rig, reply_turn, text):
+    from roco.protocol import Transcript
+
+    rig.reply(reply_turn, texts=TIME_REPLY)
+    rig.play(0.12)  # first sentence heard, second playing
+    rig.mic(SPEECH, 2)  # barge-in
+    rig.mic(QUIET, 6)  # turn ends
+    rig.sent()
+    rig.brain.end.send(Transcript(turn=reply_turn + 1, text=text))
+
+
+def test_a_barge_in_that_was_rocos_echo_is_cancelled_before_it_is_answered(rig):
+    rig.user_turn()
+    _barge_then_transcript(rig, 1, "House three.")
+    assert wait_for(lambda: 2 in rig.body._cancelled)
+    sent = rig.sent()
+    assert Interrupt(turn=2, reason="echo") in sent
+    # the brain's answer to the echo may arrive anyway: dropped, never played
+    for i, text in enumerate(("You've passed House three.",)):
+        rig.brain.end.send(Sentence(turn=2, index=i, text=text))
+        rig.brain.say(2, i, TTS)
+    assert wait_for(lambda: rig.body.stats["late_dropped"] >= 2)
+    assert not rig.player.playing
+    assert rig.body.stats["echo_barge_ins"][0]["heard"] == "House three."
+    assert rig.body.mode is Mode.FOLLOWUP
+    assert rig.body.barge_mode is BargeInMode.SPEECH  # one echo is not enough
+
+
+def test_a_real_barge_in_is_answered(rig):
+    rig.user_turn()
+    _barge_then_transcript(rig, 1, "Stop, do I have any unread emails?")
+    assert wait_for(lambda: rig.body._false_barges == 0 and not rig.body._barge_turns)
+    assert 2 not in rig.body._cancelled
+    assert Interrupt(turn=2, reason="echo") not in rig.sent()
+
+
+def test_repeated_echo_barge_ins_switch_to_name_only(rig, capsys):
+    rig.user_turn()
+    _barge_then_transcript(rig, 1, "on the song.")
+    assert wait_for(lambda: 2 in rig.body._cancelled)
+    rig.clock.advance(10)
+    rig.mic(SPEECH, 3)  # a follow-up turn (3)...
+    rig.mic(QUIET, 6)
+    _barge_then_transcript(rig, 3, "Just go.")  # ...interrupted by echo again (4)
+    assert wait_for(lambda: rig.body.barge_mode is BargeInMode.NAME)
+    assert "ROCO's own echo" in capsys.readouterr().out
+
+
+def test_echo_barge_ins_far_apart_do_not_switch(rig):
+    rig.user_turn()
+    _barge_then_transcript(rig, 1, "on the song.")
+    assert wait_for(lambda: 2 in rig.body._cancelled)
+    rig.clock.advance(60)  # outside the 30 s window
+    rig.mic(SPEECH, 3)
+    rig.mic(QUIET, 6)
+    _barge_then_transcript(rig, 3, "Just go.")
+    assert wait_for(lambda: 4 in rig.body._cancelled)
+    assert rig.body.barge_mode is BargeInMode.SPEECH
+
+
+class GateMonitor:
+    """Echo monitor stand-in: says whether the current frame is above the echo."""
+
+    def __init__(self):
+        self.above = False
+        self.erle_db = None
+        self.samples = 0
+
+    def near_end(self, margin_db):
+        return self.above
+
+    def reset(self):
+        pass
+
+
+def test_speech_below_the_residual_echo_does_not_barge_in():
+    mon = GateMonitor()
+    r = Rig(monitor=mon)
+    try:
+        r.user_turn()
+        r.reply(1)
+        r.play(0.05)
+        r.mic(SPEECH, 6)  # the VAD says speech, but it is not above ROCO's echo
+        assert r.player.playing
+        mon.above = True
+        r.mic(SPEECH, 2)
+        assert not r.player.playing
+    finally:
+        r.close()
+
+
+def test_barge_in_turn_carries_the_speech_before_the_decision(rig):
+    rig.user_turn()
+    rig.reply(1)
+    rig.play(0.05)
+    rig.mic(SPEECH, 2)
+    audio = [f for f in rig.sent() if isinstance(f, AudioFrame) and f.turn == 2]
+    assert len(audio) == 10  # 800 ms pre-roll: the decision plus a late VAD start
+
+
+def test_wake_turn_carries_the_whole_wake_phrase(rig):
+    rig.mic(SPEECH, 20)  # "hey Jarvis" and earlier noise
+    rig.mic(WAKE)
+    rig.mic(QUIET, 60)
+    audio = [f for f in rig.sent() if isinstance(f, AudioFrame)]
+    first = [abs(array_level(f.pcm)) for f in audio[:16]]
+    assert first == [SPEECH] * 14 + [WAKE, QUIET]  # 1.2 s = 15 frames incl. the wake frame
+
+
+def test_barge_in_mode_accepts_the_old_name():
+    assert BargeInMode.parse("wake_word") is BargeInMode.NAME
+    assert BargeInMode.parse("name") is BargeInMode.NAME
+    assert BargeInMode.parse(None) is BargeInMode.SPEECH

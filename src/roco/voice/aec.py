@@ -318,26 +318,93 @@ def _power(x: Any) -> float:
 
 
 class EchoMonitor:
-    """Echo return loss enhancement while ROCO speaks: 10*log10(P_mic / P_cleaned).
+    """Watches the echo while ROCO speaks: ERLE, and a double-talk gate for barge-in.
 
-    Only frames where the far end is clearly playing count (``far_rms_min``). Near-end
-    speech over playback lowers a frame's ERLE, so the verdict uses the median over
-    the last ``window`` such frames: a working AEC3 shows 15-40 dB, no AEC ~0 dB.
+    **ERLE** = 10*log10(P_mic / P_cleaned) over frames where the far end is clearly
+    playing (``far_rms_min``). Near-end speech lowers a frame's ERLE, so the verdict
+    uses the median over the last ``window`` such frames: AEC3 shows 15-40 dB.
+
+    **Double-talk gate** (:meth:`near_end_db`): what survives the AEC while ROCO talks
+    is mostly residual echo, and Silero happily calls ROCO's own residual voice
+    "speech". The monitor learns that residual level (a high percentile of the
+    cleaned power over the last ``residual_window`` playback frames that did not look
+    like Adam) and reports how far the current frame is above it. The body only lets
+    a frame count towards barge-in when it is ``margin_db`` above the residual. The
+    far end stays "active" for ``hangover`` frames after playback stops (output
+    buffer + room echo still arrive).
     """
 
-    def __init__(self, far_rms_min: float = 300.0, window: int = 50) -> None:
+    def __init__(
+        self,
+        far_rms_min: float = 300.0,
+        window: int = 50,
+        residual_window: int = 40,
+        residual_percentile: float = 0.8,
+        min_residual_frames: int = 5,
+        hangover: int = 4,
+        residual_rms_min: float = 30.0,
+        learn_margin_db: float = 6.0,
+    ) -> None:
         self.far_power_min = far_rms_min**2
         self._recent: deque[float] = deque(maxlen=window)
+        self._residual: deque[float] = deque(maxlen=residual_window)
+        self.residual_percentile = residual_percentile
+        self.min_residual_frames = min_residual_frames
+        self.hangover = hangover
+        self.residual_power_min = residual_rms_min**2
+        self.learn_margin = 10 ** (learn_margin_db / 10)
         self.frames = 0
+        self._since_far = hangover + 1  # frames since the far end was last playing
+        self.last_clean_power = 0.0
+
+    @property
+    def far_active(self) -> bool:
+        """ROCO's voice is (or may still be) in the mic."""
+        return self._since_far <= self.hangover
 
     def update(self, raw: Any, clean: Any, far: Any) -> None:
-        if _power(far) < self.far_power_min:
+        p_far = _power(far)
+        p_clean = _power(clean)
+        self.last_clean_power = p_clean
+        if p_far >= self.far_power_min:
+            self._since_far = 0
+        else:
+            self._since_far += 1
+        if not self.far_active:
             return
-        p_raw, p_clean = _power(raw), _power(clean)
+        floor = self.residual_floor
+        if floor is None or p_clean <= floor * self.learn_margin:
+            self._residual.append(p_clean)  # residual echo, not Adam: learn it
+        if p_far < self.far_power_min:
+            return
+        p_raw = _power(raw)
         if p_raw <= 1.0:  # mic muted / digital silence: no information
             return
         self.frames += 1
         self._recent.append(10.0 * math.log10(p_raw / max(p_clean, 1.0)))
+
+    @property
+    def residual_floor(self) -> float | None:
+        """Learnt residual-echo power after AEC, or None until enough playback frames."""
+        if len(self._residual) < self.min_residual_frames:
+            return None
+        ordered = sorted(self._residual)
+        idx = min(len(ordered) - 1, int(self.residual_percentile * len(ordered)))
+        return max(ordered[idx], self.residual_power_min)
+
+    def near_end_db(self) -> float | None:
+        """How far the last frame is above the residual echo (dB); None = no echo now."""
+        if not self.far_active:
+            return None
+        floor = self.residual_floor
+        if floor is None:
+            return float("-inf")  # just started playing: do not trust anything yet
+        return 10.0 * math.log10(max(self.last_clean_power, 1.0) / floor)
+
+    def near_end(self, margin_db: float) -> bool:
+        """True when the last frame can be Adam: no echo now, or clearly above it."""
+        db = self.near_end_db()
+        return db is None or db >= margin_db
 
     @property
     def erle_db(self) -> float | None:
@@ -348,6 +415,7 @@ class EchoMonitor:
         return len(self._recent)
 
     def reset(self) -> None:
+        """Forget the ERLE of the last reply (the residual level is kept: same room)."""
         self._recent.clear()
 
 
