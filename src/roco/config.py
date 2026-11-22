@@ -119,6 +119,39 @@ DEFAULTS: dict[str, Any] = {
                 "input": 4.00, "output": 20.00, "cache_read": 0.20, "cache_write": 5.00,
             },
         },
+        # Spending caps for every Claude call (PC brain + body fallback), from usage_file.
+        # Past warn_at of the daily cap ROCO says so once; at a cap she goes local until
+        # local midnight (daily) or the 1st of next month (monthly). roco cloud-usage.
+        "budget": {
+            "daily_gbp": 0.20,
+            "monthly_gbp": 5.00,
+            "usd_to_gbp": 0.79,  # pricing is in USD
+            "warn_at": 0.8,
+        },
+    },
+    "brain": {
+        # PC brain (roco.brain.router, docs/ROCO_SPEC.md §9): Claude by default, local
+        # Ollama (the llm section) when there is no key, the API fails, the budget is spent
+        # or privacy mode is on; the offline line when both are down.
+        "default": "claude",  # claude | local
+        # Privacy mode fixed on: nothing goes to the cloud. Also by voice: "ROCO, local
+        # only" / "go private", "cloud back on" (saved in state_file).
+        "local_only": False,
+        "state_file": "brain_state.json",
+        "claude": {
+            "model": "claude-haiku-5-5",
+            "effort": "low",
+            "thinking": "adaptive",  # adaptive | disabled | omit (model default)
+            "max_tokens": 1024,
+            # Hard questions ("think harder", "take your time", ...) go to this model.
+            "escalate_model": "claude-sonnet-5-5",
+            "escalate_effort": "medium",
+            "escalate_max_tokens": 4096,
+            "escalate_phrases": None,  # None = built-in list (roco.brain.router)
+            "first_text_timeout_s": 6.0,  # no words (or tool call) by then: answer locally
+            "total_timeout_s": 30.0,
+            "retry_after_s": 60.0,  # after an API error, stay local this long
+        },
     },
     "history": {
         "max_turns": 12,

@@ -111,6 +111,7 @@ class History:
         tools: bool = True,
         tool_turns: int = DEFAULT_TOOL_TURNS,
         now: datetime | None = None,
+        mask_time: bool = True,
     ) -> list[dict[str, Any]]:
         """Messages to send to the model: past replies with their tag and tool trace.
 
@@ -118,7 +119,10 @@ class History:
         action with no call teaches the model to bluff. Only the last ``tool_turns``
         turns keep results of up to 400 characters; older results are squeezed to
         :data:`OLD_TOOL_RESULT_CHARS`. Each replayed result says when it was fetched,
-        so the model can tell stale calendar/email data from fresh.
+        so the model can tell stale calendar/email data from fresh. With ``mask_time``
+        (for small local models), old :data:`TIME_ONLY_TOOLS` results are replaced by a
+        reminder to call the tool again; Claude gets the old result with its age instead
+        (masked, it decided its earlier, correct times had been guesses).
         """
         out: list[dict[str, Any]] = []
         with self._lock:
@@ -140,7 +144,8 @@ class History:
                     limit = MAX_TOOL_RESULT_CHARS if index in recent else OLD_TOOL_RESULT_CHARS
                     for t in m["tools"]:
                         t = _cap_tool_message(t, limit)
-                        if t.get("role") == "tool" and t.get("tool_name") in TIME_ONLY_TOOLS:
+                        is_time = t.get("tool_name") in TIME_ONLY_TOOLS
+                        if t.get("role") == "tool" and is_time and mask_time:
                             t["content"] = (
                                 "(Old result: the time back then. To know the time now, "
                                 "call get_current_time again.)"

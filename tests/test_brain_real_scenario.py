@@ -6,18 +6,23 @@ Guards the behaviour a prompt, history or model change can quietly break:
 - replies keep their emotion tag and never leak it into the text,
 - the reminder file ends in the state the conversation asked for.
 
-Skipped unless Ollama runs with the configured model (``pytest -m ollama -s``).
-The calendar tool is a stand-in shaped like workstream D's.
+Runs against both brains: local Ollama (``pytest -m ollama -s``, skipped unless Ollama runs
+with the configured model) and Claude (``pytest -m cloud -s``, skipped without an
+Anthropic key; costs well under a penny per run on Haiku). The calendar tool is a
+stand-in shaped like workstream D's.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 
+from roco.brain.claude_brain import ClaudeBrain, create_claude_client
 from roco.brain.ollama_brain import OllamaBrain
 from roco.bus import EventBus
 from roco.config import DEFAULTS, load_config
@@ -26,7 +31,9 @@ from roco.tools import ToolContext, build_registry
 from roco.tools import reminders as rem
 from roco.tools.clock import spoken_time
 
-pytestmark = [pytest.mark.ollama, pytest.mark.timeout(900)]
+pytestmark = [pytest.mark.timeout(900)]
+BRAINS = [pytest.param("ollama", marks=pytest.mark.ollama),
+          pytest.param("claude", marks=pytest.mark.cloud)]
 
 # (what Adam says, tool that must be called or None, hook run before the turn)
 SCENARIO: list[tuple[str, str | None, str | None]] = [
@@ -70,8 +77,24 @@ def _states_current_time(reply: str) -> bool:
     return False
 
 
-@pytest.fixture(scope="module", autouse=True)
-def require_model():
+def _real_key() -> str | None:
+    """ANTHROPIC_API_KEY, else the real ~/.roco/anthropic_key (tests isolate ROCO_HOME)."""
+    if key := os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return key
+    path = Path(os.path.expanduser("~")) / ".roco" / "anthropic_key"
+    try:
+        return path.read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def _require(kind: str) -> str | None:
+    if kind == "claude":
+        pytest.importorskip("anthropic")
+        key = _real_key()
+        if not key:
+            pytest.skip("no Anthropic API key")
+        return key
     host, model = DEFAULTS["llm"]["host"], DEFAULTS["llm"]["model"]
     try:
         names = {m["name"] for m in httpx.get(f"{host}/api/tags", timeout=3).json()["models"]}
@@ -79,9 +102,12 @@ def require_model():
         pytest.skip(f"Ollama is not reachable at {host}")
     if model not in names:
         pytest.skip(f"model {model} is not pulled")
+    return None
 
 
-def test_long_conversation_uses_tools_for_every_action():
+@pytest.mark.parametrize("kind", BRAINS)
+def test_long_conversation_uses_tools_for_every_action(kind):
+    key = _require(kind)
     cfg = load_config(overrides={"history": {"persist": False}})
     bus = EventBus()
     registry = build_registry(ToolContext(config=cfg, bus=bus))
@@ -109,20 +135,37 @@ def test_long_conversation_uses_tools_for_every_action():
         return original_call(name, arguments)
 
     registry.call = spy
-    brain = OllamaBrain(cfg, bus, registry)
     first_chunks: list[str] = []
-    original_stream = brain.client.stream_chat
+    if kind == "claude":
+        brain = ClaudeBrain(cfg, bus, registry, client=create_claude_client(cfg, key))
+        original_message = brain.client.stream_message
 
-    def stream(messages, tools=None):
-        seen = False
-        for chunk in original_stream(messages, tools):
-            text = (chunk.get("message") or {}).get("content") or ""
-            if text.strip() and not seen:
-                first_chunks.append(text.lstrip())
-                seen = True
-            yield chunk
+        def stream_message(params, on_text, cancel=None, **kw):
+            seen: list[bool] = []
 
-    brain.client.stream_chat = stream
+            def spy_text(text: str) -> None:
+                if text.strip() and not seen:
+                    first_chunks.append(text.lstrip())
+                    seen.append(True)
+                on_text(text)
+
+            return original_message(params, spy_text, cancel, **kw)
+
+        brain.client.stream_message = stream_message
+    else:
+        brain = OllamaBrain(cfg, bus, registry)
+        original_stream = brain.client.stream_chat
+
+        def stream(messages, tools=None):
+            seen = False
+            for chunk in original_stream(messages, tools):
+                text = (chunk.get("message") or {}).get("content") or ""
+                if text.strip() and not seen:
+                    first_chunks.append(text.lstrip())
+                    seen = True
+                yield chunk
+
+        brain.client.stream_chat = stream
 
     transcript: list[str] = []
     failures: list[str] = []
@@ -168,5 +211,5 @@ def test_long_conversation_uses_tools_for_every_action():
         brain.close()
 
     report = "\n".join(transcript)
-    print("\n" + report + f"\n  tag rate: {tagged}/{len(SCENARIO)}")
+    print(f"\n[{kind}]\n" + report + f"\n  tag rate: {tagged}/{len(SCENARIO)}")
     assert not failures, "\n".join(failures) + "\n\n" + report

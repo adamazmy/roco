@@ -13,6 +13,12 @@ from roco.fallback.usage import format_summary, read_records, summarize, usage_f
 def run_cloud_usage(cfg: Config, by: str = "month") -> int:
     path = usage_file(cfg)
     print(format_summary(summarize(read_records(path), by=by), path))
+    try:  # today's and this month's spend against the caps (cloud.budget)
+        from roco.brain.budget import CloudBudget, format_budget
+    except ImportError:  # a body-only install without the brain's dependencies
+        return 0
+    print()
+    print(format_budget(CloudBudget.from_config(cfg).spend()))
     return 0
 
 
