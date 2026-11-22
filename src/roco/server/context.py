@@ -209,6 +209,9 @@ def create_brain_context(
         from roco.brain.factory import create_brain
 
         brain = create_brain(cfg, bus)
+        warm_cloud = getattr(brain, "warm_cloud", None)
+        if warm_up and callable(warm_cloud):  # Claude answers before Ollama is loaded
+            threading.Thread(target=warm_cloud, name="roco-cloud-warm-up", daemon=True).start()
     if token is None:
         token = load_or_create_token(resolve(cfg.get_path("link.token_file", "link_token")))
     name = getattr(brain, "name", None)

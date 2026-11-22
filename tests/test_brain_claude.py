@@ -544,3 +544,125 @@ def test_claude_brain_alone_apologises_in_character(ollama, registry):
     said: list[str] = []
     brain.respond("Hi.", said.append)
     assert said == [APOLOGY_CLOUD]
+
+
+# =========================================================================== fact guard
+
+
+@pytest.fixture
+def data_registry(registry):
+    @registry.tool(description="Unread emails.")
+    def get_unread_emails() -> str:
+        registry.calls.append("get_unread_emails")
+        return "2 unread: Halfords (MOT booked); Mum (Sunday lunch?)."
+
+    @registry.tool(description="List reminders.")
+    def list_reminders() -> str:
+        registry.calls.append("list_reminders")
+        return "1: ring the garage at 14:10."
+
+    @registry.tool(description="Cancel a reminder.",
+                   parameters={"type": "object", "properties": {"number": {"type": "integer"}},
+                               "required": ["number"]})
+    def cancel_reminder(number: int) -> str:
+        registry.calls.append(f"cancel_reminder:{number}")
+        return f"Reminder {number} cancelled."
+
+    return registry
+
+
+def test_invented_data_answer_is_never_spoken_and_is_fetched(ollama, data_registry):
+    router, fake = make(ollama.url, data_registry,
+                        say("[neutral] No new emails since you last looked."),
+                        call(("get_unread_emails", {})),
+                        say("[happy] Two unread: Halfords and your mum."))
+    said, _ = run(router, "Do I have any unread emails?")
+    assert said == ["Two unread: Halfords and your mum."]
+    assert data_registry.calls == ["get_unread_emails"]
+    note = fake.calls[1]["messages"][-1]["content"][-1]["text"]
+    assert "get_unread_emails" in note and "made up" in note
+    assert "No new emails" not in router.history.messages[-1]["content"]
+
+
+def test_words_before_the_tool_are_released_when_it_runs(ollama, data_registry):
+    router, _ = make(ollama.url, data_registry,
+                     call(("get_unread_emails", {}), text="[curious] Let me look."),
+                     say("[happy] Two unread."))
+    said, _ = run(router, "Any emails?")
+    assert said == ["Let me look.", "Two unread."]
+
+
+def test_fetch_guard_owns_up_when_the_model_still_will_not_check(ollama, data_registry):
+    from roco.brain.core import FETCH_FAILED
+
+    router, _ = make(ollama.url, data_registry, say("[neutral] Nothing new."),
+                     say("[neutral] Still nothing new."))
+    said, _ = run(router, "Do I have any unread emails?")
+    assert said == [FETCH_FAILED]
+
+
+def test_fetch_guard_on_the_local_brain(data_registry):
+    from mock_ollama import tool_calls
+
+    server = MockOllama()
+    try:
+        server.script = [[content("[happy] You've got a coding meet-up at six.")],
+                         [tool_calls(("get_events", {"day": "tomorrow"}))],
+                         [content("[neutral] Tomorrow you've got the dentist at ten.")]]
+        router, _ = make(server.url, data_registry, brain={"default": "local"})
+        said, _ = run(router, "What's on my calendar tomorrow?")
+    finally:
+        server.close()
+    assert " ".join(said) == "Tomorrow you've got the dentist at ten."
+    assert data_registry.calls == ["get_events:tomorrow"]
+
+
+def test_change_requests_and_chat_are_not_held(ollama, data_registry):
+    router, _ = make(ollama.url, data_registry, say("[happy] Shall I add it?"),
+                     say("[happy] Lovely weather."))
+    assert run(router, "Add the dentist to my calendar for Friday.")[0] == ["Shall I add it?"]
+    assert run(router, "Nice day, isn't it?")[0] == ["Lovely weather."]
+
+
+def test_cancel_claim_without_the_tool_is_repaired(ollama, data_registry):
+    router, _ = make(ollama.url, data_registry,
+                     say("[happy] Cancelled, all done."),
+                     call(("list_reminders", {})),
+                     call(("cancel_reminder", {"number": 1})),
+                     say("[happy] Gone."))
+    said, _ = run(router, "Cancel the garage one.")
+    assert said == ["Cancelled, all done."]
+    assert data_registry.calls == ["list_reminders", "cancel_reminder:1"]
+
+
+def test_cancelling_a_reminder_never_triggers_the_set_reminder_repair(ollama, data_registry):
+    router, fake = make(ollama.url, data_registry,
+                        call(("cancel_reminder", {"number": 1})),
+                        say("[happy] Done, the Mum reminder's gone."))
+    said, _ = run(router, "Cancel the reminder about Mum.")
+    assert said == ["Done, the Mum reminder's gone."]
+    assert len(fake.calls) == 2  # no repair round
+
+
+def test_warm_up_writes_the_cache_without_streaming(ollama, registry):
+    router, fake = make(ollama.url, registry, say("[happy] Hi."))
+    created: list[dict] = []
+
+    def create(**params):
+        created.append(params)
+        usage = {"input_tokens": 3, "output_tokens": 0, "cache_read_input_tokens": 0,
+                 "cache_creation_input_tokens": 2050}
+        return type("Msg", (), {"content": [], "usage": usage, "stop_reason": "max_tokens"})()
+
+    fake.create = create
+    assert router.warm_cloud() is True
+    params = created[0]
+    assert params["max_tokens"] == 0 and "stream" not in params
+    assert params["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    run(router, "Hello.")
+    assert fake.calls[0]["system"] == params["system"]  # same prefix: the real turn hits it
+    assert fake.calls[0]["tools"] == params["tools"]
+    rec = read_records(resolve("cloud_usage.jsonl"))[0]
+    assert rec["purpose"] == "warm-up" and rec["cache_creation_input_tokens"] == 2050
+    router.local_only = True
+    assert router.warm_cloud() is False

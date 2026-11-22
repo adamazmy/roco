@@ -35,6 +35,7 @@ import re
 import threading
 from abc import abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -78,6 +79,68 @@ REMINDER_REPAIR_NOTE = (
     "minutes_from_now for \"in ten minutes\", at for a clock time like \"at six\".)"
 )
 REMINDER_REPAIR_FAILED = "Actually, I didn't manage to set that reminder. Ask me again?"
+# "Cancel the garage one." answered "Cancelled, all done." with no cancel_reminder call.
+CANCEL_REQUEST = re.compile(r"\b(cancel|delete|remove|scrap|get\s+rid\s+of|clear)\b",
+                            re.IGNORECASE)
+CANCEL_CLAIM = re.compile(
+    r"\b(cancell?ed|deleted|removed|scrapped|cleared|gone|done|sorted)\b", re.IGNORECASE
+)
+CANCEL_REPAIR_NOTE = (
+    "(Note from the system, not from {user}: you said it was cancelled but you didn't call "
+    "cancel_reminder. If {user} meant a reminder, call list_reminders and then "
+    "cancel_reminder with its number now; otherwise say plainly you can't cancel that.)"
+)
+CANCEL_REPAIR_FAILED = "Actually, I didn't manage to cancel that. Ask me again?"
+
+
+@dataclass(frozen=True)
+class ActionCheck:
+    """A request whose spoken claim must be backed by a successful ``tool`` call."""
+
+    tool: str
+    request: Callable[[str], bool]
+    claim: re.Pattern[str]
+    note: str
+    failed: str
+
+
+ACTION_CHECKS = (
+    ActionCheck(
+        "set_reminder",
+        lambda t: bool(REMINDER_REQUEST.search(t)) and not CANCEL_REQUEST.search(t),
+        ACTION_CLAIM, REMINDER_REPAIR_NOTE, REMINDER_REPAIR_FAILED,
+    ),
+    ActionCheck(
+        "cancel_reminder", lambda t: bool(CANCEL_REQUEST.search(t)),
+        CANCEL_CLAIM, CANCEL_REPAIR_NOTE, CANCEL_REPAIR_FAILED,
+    ),
+)
+
+# Questions about Adam's data that must be answered from a tool, never from memory: after
+# a run of chatter in the history, qwen2.5 answered "any unread emails?" with an invented
+# "no new emails" and read out a made-up calendar (2026-11-22 spoken retest).
+_DAY = (r"(?:today|tomorrow|tonight|this|next|on|at|for|monday|tuesday|wednesday|thursday"
+        r"|friday|saturday|sunday)")
+DATA_QUESTIONS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"\b(e-?mails?|inbox)\b", re.IGNORECASE),
+     ("get_unread_emails", "search_emails", "read_email")),
+    (re.compile(r"\b(calendar|diary|schedule|agenda|appointments?|meetings?)\b"
+                rf"|\b(?:anything|what'?s|what\s+is)\s+on\s+{_DAY}\b|\bam\s+i\s+(?:free|busy)\b",
+                re.IGNORECASE),
+     ("get_events",)),
+    (re.compile(r"\b(what|which|any|list|how\s+many|read\s+me|tell\s+me)\b[^.?!]{0,30}"
+                r"\breminders?\b", re.IGNORECASE),
+     ("list_reminders",)),
+)
+# Requests that change data: answered by asking for confirmation or by an action tool.
+_CHANGE_REQUEST = re.compile(
+    r"\b(add|create|book|put|move|make|set|cancel|delete|remove|send|reply)\b", re.IGNORECASE
+)
+FETCH_REPAIR_NOTE = (
+    "(Note from the system, not from {user}: you answered without calling {tool}, so that "
+    "answer may be made up. Call {tool} now and answer {user}'s question from its result.)"
+)
+FETCH_FAILED = "Sorry, I couldn't check that just now. Ask me again in a moment?"
 
 
 class BackendFailed(Exception):
@@ -111,6 +174,8 @@ class TurnControl:
     def __init__(self, cancel: threading.Event | None, hooks: TurnHooks | None) -> None:
         self.cancel = cancel
         self.hooks = hooks or _NO_HOOKS
+        # Called once, just before the first tool runs (releases a held reply).
+        self.before_tools: Callable[[], None] | None = None
 
     @property
     def cancelled(self) -> bool:
@@ -128,6 +193,9 @@ class TurnControl:
                 log.exception("on_token hook failed")
 
     def tools(self, names: list[str]) -> None:
+        if self.before_tools is not None:
+            release, self.before_tools = self.before_tools, None
+            release()
         if self.hooks.on_tools is not None:
             try:
                 self.hooks.on_tools(names)
@@ -153,6 +221,28 @@ class Reply:
         self._emotion: Emotion | None = None
         self.first_emotion: Emotion | None = None
         self.sentences: list[str] = []
+        # While holding, sentences are kept (and counted) but not spoken yet.
+        self.holding = False
+        self._held: list[str] = []
+
+    def hold(self) -> None:
+        self.holding = True
+
+    def release(self) -> None:
+        """Speak the held sentences now and stop holding."""
+        self.holding = False
+        held, self._held = self._held, []
+        for sentence in held:
+            self._emit(sentence)
+
+    def discard(self) -> str:
+        """Forget the held sentences (never spoken); returns their text."""
+        self.holding = False
+        held, self._held = self._held, []
+        if held:
+            del self.sentences[-len(held):]
+        self._splitter = splitter(first=not self.sentences)
+        return " ".join(held)
 
     @property
     def text(self) -> str:
@@ -196,6 +286,14 @@ class Reply:
         if self._emotion is None:
             self.set_emotion(None)
         self.sentences.append(sentence)
+        if self.holding:
+            self._held.append(sentence)
+            return
+        self._emit(sentence)
+
+    def _emit(self, sentence: str) -> None:
+        if self._cancel is not None and self._cancel.is_set():
+            return
         if self._on_sentence is None:
             return
         try:
@@ -281,9 +379,17 @@ class ToolBrain(Brain):
             messages.append({"role": "user", "content": text})
             base = len(messages)
             messages.extend(self._prefetch_time(text, turn))
+            fetch = self._fetch_tools(text)
+            if fetch:
+                # Hold the words until a tool runs: an answer with no tool call is dropped
+                # unspoken and the data is fetched (see _repair_fetch).
+                reply.hold()
+                ctl.before_tools = reply.release
             try:
                 ctl.check()
                 trace = self._converse(messages, reply, turn, ctl, trace_from=base)
+                if fetch and reply.holding:
+                    trace = trace + self._repair_fetch(messages, reply, turn, ctl, fetch)
             except Cancelled:
                 # Keep what was said and the tool calls already made; the server then
                 # replaces the reply with what was heard (amend_last_reply).
@@ -304,14 +410,15 @@ class ToolBrain(Brain):
             if not reply.sentences:
                 log.warning("[turn %d] Model returned no text", turn)
                 return self._apologise(reply, self.empty_reply_line())
-            if self._claims_unset_reminder(text, reply.text, trace):
+            check = self._unbacked_claim(text, reply.text, trace)
+            if check is not None:
                 try:
-                    trace = trace + self._repair_reminder(messages, reply, turn, ctl)
+                    trace = trace + self._repair_action(messages, reply, turn, ctl, check)
                 except Cancelled:
                     pass
                 except self.backend_errors as exc:
-                    log.warning("[turn %d] reminder repair failed: %s", turn, exc)
-                    reply.say(REMINDER_REPAIR_FAILED)
+                    log.warning("[turn %d] %s repair failed: %s", turn, check.tool, exc)
+                    reply.say(check.failed)
             emotion = reply.first_emotion.value if reply.first_emotion else None
             self.history.add_turn(text, reply.text, emotion, trace, at=started)
             return reply.text
@@ -393,35 +500,84 @@ class ToolBrain(Brain):
         return str(self.config.section("assistant").get("user_name", "Adam"))
 
     # ------------------------------------------------------------------ safety nets
+    def _unbacked_claim(
+        self, text: str, said: str, trace: list[dict[str, Any]]
+    ) -> ActionCheck | None:
+        """The action check a reply fails: it claims the action but the tool never ran."""
+        for check in ACTION_CHECKS:
+            if (check.tool in self.registry and check.request(text)
+                    and check.claim.search(said) and not tool_succeeded(trace, check.tool)):
+                return check
+        return None
+
     def _claims_unset_reminder(
         self, text: str, said: str, trace: list[dict[str, Any]]
     ) -> bool:
-        if "set_reminder" not in self.registry or not REMINDER_REQUEST.search(text):
-            return False
-        if not ACTION_CLAIM.search(said):
-            return False
-        return not tool_succeeded(trace, "set_reminder")
+        check = self._unbacked_claim(text, said, trace)
+        return check is not None and check.tool == "set_reminder"
 
-    def _repair_reminder(
-        self, messages: list[dict[str, Any]], reply: Reply, turn: int, ctl: TurnControl
+    def _repair_action(
+        self, messages: list[dict[str, Any]], reply: Reply, turn: int, ctl: TurnControl,
+        check: ActionCheck,
     ) -> list[dict[str, Any]]:
-        """Make an "I'll set it" true: one silent tool round asking for set_reminder.
+        """Make an "I've set it" / "cancelled" true: one silent tool round asking for it.
 
-        Nothing from the repair round is spoken; if the reminder still isn't set, ROCO
-        owns up. Only the tool call and its result are kept for the history.
+        Nothing from the repair round is spoken; if the action still didn't happen, ROCO
+        owns up. Only the tool calls and their results are kept for the history.
         """
-        log.warning("[turn %d] claimed a reminder without set_reminder; repairing", turn)
+        log.warning("[turn %d] claimed %s without calling it; repairing", turn, check.tool)
         repair = [
             *messages,
             {"role": "assistant", "content": reply.text},
-            {"role": "user", "content": REMINDER_REPAIR_NOTE.format(user=self.user_name)},
+            {"role": "user", "content": check.note.format(user=self.user_name)},
         ]
         silent = Reply(self.bus, None, ctl.cancel)
         done = self._converse(repair, silent, turn, ctl)
         kept = [m for m in done if m.get("tool_calls") or m.get("role") == "tool"]
-        if not tool_succeeded(kept, "set_reminder"):
-            reply.say(REMINDER_REPAIR_FAILED)
+        if not tool_succeeded(kept, check.tool):
+            reply.say(check.failed)
         return kept
+
+    def _repair_reminder(
+        self, messages: list[dict[str, Any]], reply: Reply, turn: int, ctl: TurnControl
+    ) -> list[dict[str, Any]]:
+        return self._repair_action(messages, reply, turn, ctl, ACTION_CHECKS[0])
+
+    def _fetch_tools(self, text: str) -> tuple[str, ...]:
+        """For a question about Adam's data, the tools (available now) that answer it."""
+        if _CHANGE_REQUEST.search(text):
+            return ()
+        allowed = self.personality.allowed_tool
+        for pattern, tools in DATA_QUESTIONS:
+            if pattern.search(text):
+                found = tuple(t for t in tools if t in self.registry and allowed(t))
+                if found:
+                    return found
+        return ()
+
+    def _repair_fetch(
+        self, messages: list[dict[str, Any]], reply: Reply, turn: int, ctl: TurnControl,
+        tools: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        """The model answered a data question without a tool: drop that answer (it was
+        never spoken) and ask once more, this time for the tool. If it still won't call
+        one, say we couldn't check instead of guessing."""
+        dropped = reply.discard()
+        log.warning("[turn %d] answered a %s question without calling it (%r); fetching",
+                    turn, tools[0], dropped[:80])
+        repair = [*messages]
+        if dropped:
+            repair.append({"role": "assistant", "content": dropped})
+        repair.append({"role": "user",
+                       "content": FETCH_REPAIR_NOTE.format(user=self.user_name, tool=tools[0])})
+        reply.hold()
+        ctl.before_tools = reply.release
+        done = self._converse(repair, reply, turn, ctl)
+        ctl.before_tools = None
+        if reply.holding:
+            reply.discard()
+            reply.say(FETCH_FAILED)
+        return [m for m in done if m.get("tool_calls") or m.get("role") == "tool"]
 
     def _prefetch_time(self, text: str, turn: int) -> list[dict[str, Any]]:
         """For a plain "what time is it?", call get_current_time before the model does.

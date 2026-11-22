@@ -213,3 +213,82 @@ def test_long_conversation_uses_tools_for_every_action(kind):
     report = "\n".join(transcript)
     print(f"\n[{kind}]\n" + report + f"\n  tag rate: {tagged}/{len(SCENARIO)}")
     assert not failures, "\n".join(failures) + "\n\n" + report
+
+
+# Adam's spoken retest (2026-11-22): echo transcripts of ROCO's own voice filled the
+# history with turns that used no tools, and qwen2.5 then answered "Do I have any unread
+# emails?" from nothing. These turns rebuild that history before the real questions.
+CHATTER: list[tuple[str, str]] = [
+    ("Hello? Hello?", "Hello, Adam. I'm right here."),
+    ("I'm right here.", "Yes, you are. Lovely to see you."),
+    ("Lovely to see you.", "Are you repeating me now?"),
+    ("Are you repeating me now?", "Apparently so. Very flattering."),
+    ("Very flattering.", "Mm, flattery gets you everywhere."),
+    ("Everywhere.", "Everywhere indeed."),
+    ("Okay.", "Okay."),
+    ("Yeah.", "Right then."),
+    ("Right then.", "Anything you need?"),
+    ("Anything you need?", "That's my line, Adam."),
+]
+AFTER_CHATTER: list[tuple[str, str]] = [
+    ("Do I have any unread emails?", "get_unread_emails"),
+    ("What's on my calendar tomorrow?", "get_events"),
+    ("Remind me to ring the garage in ten minutes.", "set_reminder"),
+    ("What reminders have I got?", "list_reminders"),
+    ("Cancel the garage one.", "cancel_reminder"),
+]
+
+
+@pytest.mark.parametrize("kind", BRAINS)
+def test_tools_are_still_called_after_a_history_of_chatter(kind):
+    key = _require(kind)
+    cfg = load_config(overrides={"history": {"persist": False}})
+    bus = EventBus()
+    registry = build_registry(ToolContext(config=cfg, bus=bus))
+
+    @registry.tool(
+        description="List calendar events for a day: 'today', 'tomorrow' or YYYY-MM-DD.",
+        parameters={"type": "object", "properties": {"day": {"type": "string"}},
+                    "required": ["day"]},
+    )
+    def get_events(day: str) -> str:
+        return f"{day}: MOT at the garage at 09:30."
+
+    if "get_unread_emails" not in registry:
+        @registry.tool(
+            description="Read Adam's unread emails (sender and subject), newest first.",
+            parameters={"type": "object", "properties": {"max": {"type": "integer"}},
+                        "required": []},
+        )
+        def get_unread_emails(max: int = 5) -> str:
+            return "2 unread: Halfords (Your MOT is booked); Mum (Sunday lunch?)."
+
+    calls: list[str] = []
+    original_call = registry.call
+
+    def spy(name, arguments=None):
+        calls.append(name)
+        return original_call(name, arguments)
+
+    registry.call = spy
+    if kind == "claude":
+        brain = ClaudeBrain(cfg, bus, registry, client=create_claude_client(cfg, key))
+    else:
+        brain = OllamaBrain(cfg, bus, registry)
+    for user, reply in CHATTER:
+        brain.history.add_turn(user, reply, "neutral", [])
+    failures: list[str] = []
+    transcript: list[str] = []
+    try:
+        for said, required in AFTER_CHATTER:
+            calls.clear()
+            reply = brain.respond(said)
+            transcript.append(f"you: {said}\n  tools={calls}\n  roco: {reply}")
+            if required not in calls:
+                failures.append(f"{said!r}: expected {required}, got {calls}: {reply!r}")
+    finally:
+        rem.stop_all()
+        brain.close()
+    report = "\n".join(transcript)
+    print(f"\n[{kind} after chatter]\n" + report)
+    assert not failures, "\n".join(failures) + "\n\n" + report

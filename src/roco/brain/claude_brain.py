@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -80,6 +81,9 @@ class ClaudeBrain(ToolBrain):
         self.max_tokens = int(c.get("max_tokens", 1024))
         self.escalate_max_tokens = int(c.get("escalate_max_tokens", 4096))
         self.first_text_timeout_s = float(c.get("first_text_timeout_s", 6.0))
+        # The bigger model thinks before it speaks: a short deadline would send every
+        # escalated question to the local brain.
+        self.escalate_first_text_timeout_s = float(c.get("escalate_first_text_timeout_s", 25.0))
         # Set by the router for one turn: answer on the larger model.
         self.escalated = False
         self.last_usage: list[dict[str, Any]] = []  # per request of the last turn (tests, logs)
@@ -94,6 +98,30 @@ class ClaudeBrain(ToolBrain):
 
     def apology_for(self, error: BaseException) -> str:
         return APOLOGY_CLOUD_KEY if isinstance(error, CloudPermanentError) else APOLOGY_CLOUD
+
+    def warm_up(self) -> bool:
+        """One ``max_tokens: 0`` request with the real tools and system prompt: imports the
+        SDK, opens the connection and writes the prompt cache, so Adam's first question
+        is not the slow one. Not streamed (``max_tokens: 0`` rejects ``stream``). Best
+        effort: False on failure."""
+        from roco.fallback.usage import Usage
+
+        with self._lock:
+            params = self.request_params(
+                [self.system_message(), {"role": "user", "content": "Hi."}])
+        params["max_tokens"] = 0
+        try:
+            t0 = time.monotonic()
+            message = self.client._sdk().messages.create(**params)
+        except Exception as exc:
+            log.warning("Claude warm-up failed: %s", exc)
+            return False
+        ms = int((time.monotonic() - t0) * 1000)
+        if self.client.usage_log is not None:
+            self.client.usage_log.record(params["model"], Usage.from_api(message.usage), ok=True,
+                                         total_ms=ms, purpose="warm-up")
+        log.info("Claude warmed up in %d ms", ms)
+        return True
 
     def respond_turn(self, text, on_sentence=None, *, cancel=None, hooks=None) -> str:
         self.last_usage = []
@@ -203,7 +231,8 @@ class ClaudeBrain(ToolBrain):
         cancel = ctl.cancel or threading.Event()
         result = self.client.stream_message(
             params, on_text, cancel, purpose="brain",
-            first_text_timeout_s=self.first_text_timeout_s,
+            first_text_timeout_s=(self.escalate_first_text_timeout_s if self.escalated
+                                  else self.first_text_timeout_s),
         )
         self.last_usage.append({"model": params["model"], **vars(result.usage)})
         if result.cancelled or ctl.cancelled:
@@ -361,7 +390,7 @@ def create_claude_client(cfg: Config, api_key: str | None, sdk: Any = None) -> C
         connect_timeout_s=float(cloud.get("connect_timeout_s", 3.0)),
         read_timeout_s=float(cloud.get("read_timeout_s", 8.0)),
         first_text_timeout_s=float(c.get("first_text_timeout_s", 6.0)),
-        total_timeout_s=float(c.get("total_timeout_s", 30.0)),
+        total_timeout_s=float(c.get("total_timeout_s", 40.0)),
         max_retries=int(cloud.get("max_retries", 1)),
         usage_log=UsageLog.from_config(cfg),
         client=sdk,

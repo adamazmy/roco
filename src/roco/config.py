@@ -149,7 +149,8 @@ DEFAULTS: dict[str, Any] = {
             "escalate_max_tokens": 4096,
             "escalate_phrases": None,  # None = built-in list (roco.brain.router)
             "first_text_timeout_s": 6.0,  # no words (or tool call) by then: answer locally
-            "total_timeout_s": 30.0,
+            "escalate_first_text_timeout_s": 25.0,  # the escalation model thinks first
+            "total_timeout_s": 40.0,
             "retry_after_s": 60.0,  # after an API error, stay local this long
         },
     },

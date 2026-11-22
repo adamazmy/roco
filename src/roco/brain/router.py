@@ -223,6 +223,17 @@ class BrainRouter(Brain):
         warm = getattr(self.local, "warm_up", None)
         return bool(warm()) if callable(warm) else True
 
+    def warm_cloud(self) -> bool:
+        """Pre-warm Claude (SDK import, connection, prompt cache) if it answers next.
+
+        Measured: the first Claude turn of a process took 3.9 s to its first words, the
+        next ones 0.6-0.7 s. Costs one cache write (~$0.0003 on Haiku) per start.
+        """
+        if self.claude is None or not self.cloud_available():
+            return False
+        warm = getattr(self.claude, "warm_up", None)
+        return bool(warm()) if callable(warm) else False
+
     def close(self) -> None:
         for brain in (self.claude, self.local):
             if brain is not None:
