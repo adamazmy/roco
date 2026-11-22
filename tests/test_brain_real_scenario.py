@@ -105,6 +105,14 @@ def _require(kind: str) -> str | None:
     return None
 
 
+def _show(text: str) -> None:
+    """Print the transcript even on a Windows console that can't encode an emoji."""
+    import sys
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(encoding, "replace").decode(encoding))
+
+
 @pytest.mark.parametrize("kind", BRAINS)
 def test_long_conversation_uses_tools_for_every_action(kind):
     key = _require(kind)
@@ -211,7 +219,7 @@ def test_long_conversation_uses_tools_for_every_action(kind):
         brain.close()
 
     report = "\n".join(transcript)
-    print(f"\n[{kind}]\n" + report + f"\n  tag rate: {tagged}/{len(SCENARIO)}")
+    _show(f"\n[{kind}]\n" + report + f"\n  tag rate: {tagged}/{len(SCENARIO)}")
     assert not failures, "\n".join(failures) + "\n\n" + report
 
 
@@ -290,5 +298,5 @@ def test_tools_are_still_called_after_a_history_of_chatter(kind):
         rem.stop_all()
         brain.close()
     report = "\n".join(transcript)
-    print(f"\n[{kind} after chatter]\n" + report)
+    _show(f"\n[{kind} after chatter]\n" + report)
     assert not failures, "\n".join(failures) + "\n\n" + report
