@@ -574,13 +574,15 @@ def data_registry(registry):
 def test_invented_data_answer_is_never_spoken_and_is_fetched(ollama, data_registry):
     router, fake = make(ollama.url, data_registry,
                         say("[neutral] No new emails since you last looked."),
-                        call(("get_unread_emails", {})),
                         say("[happy] Two unread: Halfords and your mum."))
     said, _ = run(router, "Do I have any unread emails?")
     assert said == ["Two unread: Halfords and your mum."]
-    assert data_registry.calls == ["get_unread_emails"]
-    note = fake.calls[1]["messages"][-1]["content"][-1]["text"]
-    assert "get_unread_emails" in note and "made up" in note
+    assert data_registry.calls == ["get_unread_emails"]  # run by the brain itself
+    result = fake.calls[1]["messages"][-1]["content"][0]
+    assert result["type"] == "tool_result" and "Halfords" in result["content"]
+    assert "No new emails" not in json.dumps(fake.calls[1]["messages"])
+    stored = router.history.for_model()
+    assert any(m.get("tool_name") == "get_unread_emails" for m in stored)
     assert "No new emails" not in router.history.messages[-1]["content"]
 
 
@@ -592,22 +594,28 @@ def test_words_before_the_tool_are_released_when_it_runs(ollama, data_registry):
     assert said == ["Let me look.", "Two unread."]
 
 
-def test_fetch_guard_owns_up_when_the_model_still_will_not_check(ollama, data_registry):
+def test_fetch_guard_asks_again_then_owns_up_when_it_cannot_call_the_tool(ollama):
     from roco.brain.core import FETCH_FAILED
 
-    router, _ = make(ollama.url, data_registry, say("[neutral] Nothing new."),
-                     say("[neutral] Still nothing new."))
-    said, _ = run(router, "Do I have any unread emails?")
+    reg = ToolRegistry()
+
+    @reg.tool(description="Search emails.",
+              parameters={"type": "object", "properties": {"query": {"type": "string"}},
+                          "required": ["query"]})
+    def search_emails(query: str) -> str:
+        return "nothing"
+
+    router, fake = make(ollama.url, reg, say("[neutral] Nothing new."),
+                        say("[neutral] Still nothing new."))
+    said, _ = run(router, "Any emails from the garage?")
     assert said == [FETCH_FAILED]
+    assert "search_emails" in fake.calls[1]["messages"][-1]["content"][-1]["text"]
 
 
 def test_fetch_guard_on_the_local_brain(data_registry):
-    from mock_ollama import tool_calls
-
     server = MockOllama()
     try:
         server.script = [[content("[happy] You've got a coding meet-up at six.")],
-                         [tool_calls(("get_events", {"day": "tomorrow"}))],
                          [content("[neutral] Tomorrow you've got the dentist at ten.")]]
         router, _ = make(server.url, data_registry, brain={"default": "local"})
         said, _ = run(router, "What's on my calendar tomorrow?")
@@ -680,3 +688,16 @@ def test_forget_turn_drops_only_that_exchange_for_every_brain(ollama, registry):
     assert len(router.history.messages) == 2
     router.local.forget_turn("What's up?")  # the backends share it
     assert router.history.messages == []
+
+
+
+def test_forced_calendar_day_comes_from_the_question(ollama, data_registry):
+    router, _ = make(ollama.url, data_registry)
+    brain = router.claude
+    brain._clock = lambda: datetime(2026, 11, 22, 10, tzinfo=LONDON)  # a Sunday
+    assert brain._forced_call(("get_events",), "what's on tomorrow") == (
+        "get_events", {"day": "tomorrow"})
+    assert brain._forced_call(("get_events",), "am I busy on Friday?") == (
+        "get_events", {"day": "2026-11-27"})
+    assert brain._forced_call(("get_events",), "anything in my diary") == (
+        "get_events", {"day": "today"})

@@ -36,7 +36,7 @@ import threading
 from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from roco.brain.base import Brain, SentenceCallback, TurnHooks
@@ -559,16 +559,59 @@ class ToolBrain(Brain):
                     return found
         return ()
 
+    def _forced_call(self, tools: tuple[str, ...], text: str) -> tuple[str, dict[str, Any]] | None:
+        """A call of one of ``tools`` the brain can make itself: every required argument
+        is known (the calendar day comes from "today" / "tomorrow" / a weekday)."""
+        for schema in self.registry.schemas():
+            fn = schema["function"]
+            if fn["name"] not in tools:
+                continue
+            params = fn.get("parameters") or {}
+            props = params.get("properties") or {}
+            args: dict[str, Any] = {}
+            day_key = next((k for k in ("date", "day") if k in props), None)
+            if day_key is not None:
+                args[day_key] = self._day_from(text)
+            if all(r in args for r in params.get("required") or []):
+                return fn["name"], args
+        return None
+
+    def _day_from(self, text: str) -> str:
+        t = text.lower()
+        if "tomorrow" in t:
+            return "tomorrow"
+        today = self._clock().date()
+        for offset in range(1, 8):
+            day = today + timedelta(days=offset)
+            if f"{day:%A}".lower() in t:
+                return day.isoformat()
+        return "today"
+
     def _repair_fetch(
         self, messages: list[dict[str, Any]], reply: Reply, turn: int, ctl: TurnControl,
         tools: tuple[str, ...],
     ) -> list[dict[str, Any]]:
         """The model answered a data question without a tool: drop that answer (it was
-        never spoken) and ask once more, this time for the tool. If it still won't call
-        one, say we couldn't check instead of guessing."""
+        never spoken) and fetch the data. If the brain can make the call itself it does
+        (as with the time prefetch: a small model that skipped the tool once often
+        skips it again) and the model answers from the result; otherwise the model is
+        asked once more. If no tool runs, ROCO says she couldn't check."""
         dropped = reply.discard()
         log.warning("[turn %d] answered a %s question without calling it (%r); fetching",
                     turn, tools[0], dropped[:80])
+        forced = self._forced_call(tools, " ".join(
+            str(m.get("content", "")) for m in messages[-3:] if m.get("role") == "user"))
+        if forced is not None:
+            name, args = forced
+            ctl.tools([name])
+            result = self.run_tool(name, args)
+            fetched = [
+                {"role": "assistant", "content": "",
+                 "tool_calls": [{"function": {"name": name, "arguments": args}}]},
+                {"role": "tool", "content": result, "tool_name": name},
+            ]
+            done = self._converse([*messages, *fetched], reply, turn, ctl)
+            return fetched + [m for m in done if m.get("tool_calls") or m.get("role") == "tool"]
         repair = [*messages]
         if dropped:
             repair.append({"role": "assistant", "content": dropped})
