@@ -129,6 +129,7 @@ class BrainRouter(Brain):
         self.active: ToolBrain = claude if claude is not None else local
         self._last_prefix: list[str] = []
         self._lock = threading.Lock()
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
 
     # ------------------------------------------------------------------ properties
     @property
@@ -246,6 +247,25 @@ class BrainRouter(Brain):
                 except Exception:
                     log.exception("closing %s failed", brain.name)
 
+    # ------------------------------------------------------------------ settings
+    def settings_snapshot(self) -> dict[str, Any]:
+        """``{"brain": {"local_only": ...}}`` for the protocol's settings: the body's own
+        Claude fallback stays off the cloud while this is true (D's PR #19)."""
+        return {"brain": {"local_only": bool(self.local_only)}}
+
+    def on_change(self, listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """Call ``listener(snapshot)`` when private mode changes. Returns an unsubscribe."""
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener) if listener in self._listeners else None
+
+    def _changed(self) -> None:
+        snapshot = self.settings_snapshot()
+        for listener in list(self._listeners):
+            try:
+                listener(snapshot)
+            except Exception:
+                log.exception("brain settings listener failed")
+
     def cloud_available(self) -> bool:
         """Would the next turn go to Claude?"""
         with self._lock:
@@ -356,6 +376,7 @@ class BrainRouter(Brain):
                 return PRIVATE_ALREADY
             self.local_only = True
             self._save_state()
+            self._changed()
             log.info("Privacy mode on: local brain only")
             return PRIVATE_ON
         if PRIVATE_OFF_CMD.fullmatch(t):
@@ -367,6 +388,7 @@ class BrainRouter(Brain):
                 return PRIVATE_NOT_ON
             self.local_only = False
             self._save_state()
+            self._changed()
             self._current = "cloud"  # PRIVATE_OFF already says it
             log.info("Privacy mode off: cloud brain allowed")
             return PRIVATE_OFF

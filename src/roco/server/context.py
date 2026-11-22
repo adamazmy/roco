@@ -100,6 +100,10 @@ class BrainContext:
         Raises ValueError for a value the personality refuses (nothing is applied then).
         """
         values = dict(values or {})
+        if values.pop("brain", None) is not None:
+            # Read-only: the brain decides (voice or config). A body re-sending a saved
+            # value must not switch the cloud back on.
+            log.debug("ignoring brain settings sent by a body")
         personality = self.personality
         if personality is not None and "personality" in values:
             try:
@@ -127,6 +131,12 @@ class BrainContext:
                 snapshot = deep_merge(snapshot, personality.snapshot() or {})
             except Exception:
                 log.exception("personality.snapshot failed")
+        brain_snapshot = getattr(self.brain, "settings_snapshot", None)
+        if callable(brain_snapshot):  # {"brain": {"local_only": ...}} from the router
+            try:
+                snapshot = deep_merge(snapshot, brain_snapshot() or {})
+            except Exception:
+                log.exception("brain.settings_snapshot failed")
         return snapshot
 
     @property
@@ -140,12 +150,19 @@ class BrainContext:
     def watch_brain_settings(self, callback: Callable[[], None]) -> Callable[[], None]:
         """Call ``callback()`` when the brain changes settings itself (a voice command
         like "be more sarcastic"). Returns an unsubscribe function."""
-        personality = self.personality
-        on_change = getattr(personality, "on_change", None)
-        if not callable(on_change):
-            return lambda: None
-        unsubscribe = on_change(lambda _values: callback())
-        return unsubscribe if callable(unsubscribe) else (lambda: None)
+        unsubscribes = []
+        for source in (self.personality, self.brain):  # personality; private mode
+            on_change = getattr(source, "on_change", None)
+            if callable(on_change):
+                unsubscribe = on_change(lambda _values: callback())
+                if callable(unsubscribe):
+                    unsubscribes.append(unsubscribe)
+
+        def unsubscribe_all() -> None:
+            for unsubscribe in unsubscribes:
+                unsubscribe()
+
+        return unsubscribe_all
 
     # ------------------------------------------------------------------ config
     def server_cfg(self, dotted: str, default: Any = None) -> Any:

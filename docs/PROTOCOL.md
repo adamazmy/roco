@@ -65,7 +65,7 @@ set, so they never collide with the body's turn numbers.
 | Type | Direction | Purpose |
 |---|---|---|
 | `ping` / `pong` | both | Liveness and round-trip time (`ts` is the sender's clock, echoed) |
-| `settings` | both | Partial settings change; the brain applies it and broadcasts the result |
+| `settings` | both | Partial settings change; the brain applies it and broadcasts the result. `{"brain": {"local_only": bool}}` is brain-owned and read-only (privacy mode: the body's fallback must not use the cloud while it is true); a body sending it is ignored |
 | `text_input` | body → brain | A typed turn instead of audio |
 | `error` | both | `version`, `auth`, `busy`, `bad_message`, `internal`; `fatal` closes |
 

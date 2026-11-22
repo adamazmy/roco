@@ -731,3 +731,32 @@ def test_tool_succeeded_tells_a_cancelled_reminder_from_a_skipped_call():
     assert tool_succeeded(ok, "cancel_reminder") and tool_called(ok, "cancel_reminder")
     assert not tool_succeeded(skipped, "cancel_reminder")
     assert not tool_called(skipped, "cancel_reminder")
+
+
+def test_private_mode_is_in_the_settings_and_broadcast_to_the_body(ollama, registry,
+                                                                   tmp_path):
+    from roco.protocol import Settings, TextInput, TurnDone
+    from server_fakes import FakeBody, FakeEngine, FakeTTS, make_ctx
+
+    router, _ = make(ollama.url, registry)
+    ctx = make_ctx(tmp_path, brain=router, engine=FakeEngine(), tts=FakeTTS())
+    body = FakeBody(ctx)
+    try:
+        welcome = body.hello()
+        assert welcome.settings["brain"] == {"local_only": False}
+        assert "personality" in welcome.settings
+        body.send(TextInput(turn=1, text="ROCO, go private."))
+        frames = body.recv_until(lambda f: isinstance(f, TurnDone) and f.turn == 1)
+        pushed = [f for f in frames if isinstance(f, Settings)]
+        assert pushed and pushed[-1].values["brain"] == {"local_only": True}
+        # Read-only from the body: a stale saved value does not switch the cloud back on.
+        body.send(Settings(values={"brain": {"local_only": False}}))
+        echoed = body.recv_until(lambda f: isinstance(f, Settings))[-1]
+        assert echoed.values["brain"] == {"local_only": True} and router.local_only
+    finally:
+        body.close()
+
+
+def test_forced_local_only_is_reported_too(ollama, registry):
+    router, _ = make(ollama.url, registry, brain={"local_only": True})
+    assert router.settings_snapshot() == {"brain": {"local_only": True}}
