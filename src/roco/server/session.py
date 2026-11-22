@@ -89,6 +89,8 @@ class _Turn:
     finished: bool = False  # the brain returned and the turn is in its history
     heard: str | None = None  # from playback_done after an interrupt
     amended: bool = False
+    echo: bool = False  # interrupt{reason: "echo"}: the turn was ROCO's own voice
+    asked: str | None = None  # the text the brain was given
     seq: int = 0
 
 
@@ -316,6 +318,8 @@ class Session:
         if st is None:
             return
         st.cancel.set()
+        if msg.reason == "echo":
+            st.echo = True  # the worker removes it from the history (it owns the brain)
         if st.latency is not None:
             st.latency.info["interrupted"] = msg.reason
         log.info("turn %d interrupted (%s)", msg.turn, msg.reason)
@@ -368,6 +372,14 @@ class Session:
                         self._recent.popitem(last=False)
 
     def _apply_amends(self) -> None:
+        for old in list(self._recent.values()):
+            if old.echo and old.finished and not old.amended and old.asked:
+                old.amended = True
+                log.info("turn %d was an echo of ROCO: removed from the history", old.turn)
+                try:
+                    self.ctx.brain.forget_turn(old.asked)
+                except Exception:
+                    log.exception("forget_turn failed")
         st = self._last_answered
         if st is None or st.amended or st.heard is None or not st.finished:
             return
@@ -461,6 +473,7 @@ class Session:
 
         hooks = TurnHooks(on_token=lambda: lat.mark("first_token"), on_tools=on_tools)
         self._answering = st
+        st.asked = text
         reply = ""
         try:
             reply = self.ctx.brain.respond_turn(text, on_sentence, cancel=st.cancel, hooks=hooks)

@@ -215,6 +215,10 @@ class BrainRouter(Brain):
                 heard = heard[len(line):].strip()
         self.history.amend_last_reply(heard)
 
+    def forget_turn(self, user_text: str) -> None:
+        with self._lock:  # after the turn: the router lock is free again
+            self.history.forget_exchange((user_text or "").strip())
+
     def reset(self) -> None:
         self.history.clear()
 

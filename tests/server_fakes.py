@@ -108,6 +108,7 @@ class ScriptBrain(Brain):
                                  ("say", "Nice to see you.")]
         self.heard: list[str] = []
         self.amended: list[str] = []
+        self.forgotten: list[str] = []
         self.cancelled_at: float | None = None
         self.returned_at: float | None = None
 
@@ -141,6 +142,9 @@ class ScriptBrain(Brain):
 
     def amend_last_reply(self, heard: str) -> None:
         self.amended.append(heard)
+
+    def forget_turn(self, user_text: str) -> None:
+        self.forgotten.append(user_text)
 
     def reset(self) -> None:
         pass

@@ -203,6 +203,27 @@ class History:
         self._save(snapshot)
         return True
 
+    def forget_exchange(self, user: str) -> bool:
+        """Drop the newest exchange whose user turn is ``user`` (and its reply).
+
+        Used for echo turns: ROCO's own voice transcribed as if Adam had said it. Matching
+        on the text means a turn that never reached the history removes nothing else.
+        Returns False when no such turn is stored.
+        """
+        with self._lock:
+            for i in range(len(self._messages) - 1, -1, -1):
+                m = self._messages[i]
+                if m["role"] == "user" and m["content"] == user:
+                    end = i + 2 if (i + 1 < len(self._messages)
+                                    and self._messages[i + 1]["role"] == "assistant") else i + 1
+                    del self._messages[i:end]
+                    snapshot = list(self._messages)
+                    break
+            else:
+                return False
+        self._save(snapshot)
+        return True
+
     def clear(self) -> None:
         with self._lock:
             self._messages = []

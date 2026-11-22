@@ -666,3 +666,17 @@ def test_warm_up_writes_the_cache_without_streaming(ollama, registry):
     assert rec["purpose"] == "warm-up" and rec["cache_creation_input_tokens"] == 2050
     router.local_only = True
     assert router.warm_cloud() is False
+
+
+
+def test_forget_turn_drops_only_that_exchange_for_every_brain(ollama, registry):
+    router, _ = make(ollama.url, registry, say("[happy] Real answer."),
+                     say("[neutral] Echo answer."))
+    run(router, "What's up?")
+    run(router, "House three.")
+    router.forget_turn("House three.")
+    assert [m["content"] for m in router.history.messages] == ["What's up?", "Real answer."]
+    router.forget_turn("never said")  # a turn that never reached the history
+    assert len(router.history.messages) == 2
+    router.local.forget_turn("What's up?")  # the backends share it
+    assert router.history.messages == []

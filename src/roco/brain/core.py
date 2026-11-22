@@ -427,6 +427,10 @@ class ToolBrain(Brain):
         with self._lock:
             self.history.amend_last_reply((heard or "").strip())
 
+    def forget_turn(self, user_text: str) -> None:
+        with self._lock:
+            self.history.forget_exchange((user_text or "").strip())
+
     def reset(self) -> None:
         with self._lock:
             self.history.clear()
