@@ -61,6 +61,21 @@ def body_settings(cfg: Config) -> Any:
     )
 
 
+def brain_settings_hook(cfg: Config) -> Callable[[dict[str, Any]], Any] | None:
+    """Workstream D's ``roco.fallback.note_brain_settings(cfg, values)``, if installed:
+    it records brain settings (private mode) for the fallback chain. Light, never raises."""
+    try:
+        module = importlib.import_module("roco.fallback")
+    except ModuleNotFoundError as exc:
+        if exc.name and "roco.fallback".startswith(exc.name):
+            return None
+        raise
+    note = getattr(module, "note_brain_settings", None)
+    if not callable(note):
+        return None
+    return lambda values: note(cfg, values)
+
+
 def fallback_factory(cfg: Config) -> Callable[[], Any] | None:
     """Workstream D's chain, ``roco.fallback.create_fallback(cfg)``, if installed."""
     try:
@@ -167,6 +182,7 @@ def build_body(
             body_id=platform.node() or "body", caps=caps, aec_name=aec.name,
             echo_monitor=monitor, fallback_factory=fallback_factory(cfg),
             local_tts_factory=local_tts_factory(cfg),
+            on_brain_settings=brain_settings_hook(cfg),
             output_latency=lambda: output.latency_s,
         )
         log.info("Body ready: AEC %s, VAD %s, barge-in %s", aec.name, vad.name,

@@ -169,6 +169,7 @@ class BodyClient:
         echo_monitor: Any = None,
         fallback_factory: Callable[[], Any] | None = None,
         local_tts_factory: Callable[[], TTS] | None = None,
+        on_brain_settings: Callable[[dict[str, Any]], Any] | None = None,
         output_latency: Callable[[], float] | None = None,
         clock: Callable[[], float] = time.monotonic,
         link_options: dict[str, Any] | None = None,
@@ -188,6 +189,9 @@ class BodyClient:
         self.echo_monitor = echo_monitor
         self.fallback_factory = fallback_factory
         self.local_tts_factory = local_tts_factory
+        # Told every settings snapshot from the brain (welcome + settings frames), so the
+        # fallback chain knows e.g. private mode while the link is down.
+        self.on_brain_settings = on_brain_settings
         self.output_latency = output_latency or (lambda: 0.0)
         self.clock = clock
         self.frame_s = self.s.frame_ms / 1000.0
@@ -616,6 +620,7 @@ class BodyClient:
                         self._judge_barge_in(frame.turn, frame.text,
                                              self._barge_turns.pop(frame.turn))
             elif isinstance(frame, Settings):
+                self._note_brain_settings(frame.values)
                 if "muted" in frame.values:
                     self.set_muted(bool(frame.values["muted"]))
             elif isinstance(frame, Error):
@@ -742,8 +747,18 @@ class BodyClient:
         print(msg, flush=True)
 
     # ================================================================== link events
+    def _note_brain_settings(self, values: Any) -> None:
+        hook = self.on_brain_settings
+        if hook is None or not isinstance(values, dict):
+            return
+        try:
+            hook(values)
+        except Exception:
+            log.exception("Forwarding brain settings to the fallback failed")
+
     def _on_link_up(self, welcome: Welcome) -> None:
         self.brain_name = welcome.brain
+        self._note_brain_settings(welcome.settings)
         if welcome.tts_rate and welcome.tts_rate != self.player.rate:
             out = self.player.output
             if out is not None and hasattr(out, "reopen") and not self.player.playing:
