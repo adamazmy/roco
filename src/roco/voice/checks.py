@@ -62,12 +62,15 @@ def check_wakeword_files(cfg: Config) -> CheckResult:
 
 
 def check_piper_voice(cfg: Config) -> CheckResult:
-    from roco.voice.models import piper_voice_paths
+    from roco.voice.models import tts_engine, tts_model_files
 
-    missing = [p.name for p in piper_voice_paths(cfg) if not p.is_file()]
-    voice = str(cfg.get_path("voice.tts.voice"))
+    missing = [p.name for p in tts_model_files(cfg) if not p.is_file()]
+    if tts_engine(cfg) == "kokoro":
+        label = f"Kokoro voice ({cfg.get_path('voice.tts.kokoro.voice', 'bf_emma')})"
+    else:
+        label = f"Piper voice ({cfg.get_path('voice.tts.voice')})"
     return CheckResult(
-        f"Piper voice ({voice})", not missing,
+        label, not missing,
         "missing: " + ", ".join(missing) if missing else "ok",
         hint="Run: roco download-models", optional=not _voice_installed(),
     )

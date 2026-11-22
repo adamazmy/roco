@@ -29,11 +29,11 @@ from roco.brain.base import Brain, SentenceCallback
 from roco.brain.emotion import EmotionTagParser
 from roco.brain.history import History
 from roco.brain.ollama import OllamaClient, OllamaError
-from roco.brain.persona import system_prompt
 from roco.brain.sentences import SentenceSplitter
 from roco.bus import Emotion, EventBus, State
 from roco.config import Config
 from roco.paths import resolve
+from roco.personality import Personality
 from roco.tools.clock import describe_date, local_timezone
 from roco.tools.registry import ToolRegistry
 
@@ -69,9 +69,15 @@ def apology_for(error: OllamaError, model: str) -> str:
 class _Reply:
     """Collects one reply: publishes the emotion first, then delivers sentences."""
 
-    def __init__(self, bus: EventBus, on_sentence: SentenceCallback | None) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        on_sentence: SentenceCallback | None,
+        transform: Callable[[str], str] | None = None,
+    ) -> None:
         self._bus = bus
         self._on_sentence = on_sentence
+        self._transform = transform
         self._splitter = SentenceSplitter()
         self._emotion: Emotion | None = None
         self.first_emotion: Emotion | None = None
@@ -110,6 +116,8 @@ class _Reply:
         self._deliver(sentence)
 
     def _deliver(self, sentence: str) -> None:
+        if self._transform is not None:
+            sentence = self._transform(sentence)
         if self._emotion is None:
             self.set_emotion(None)
         self.sentences.append(sentence)
@@ -133,6 +141,7 @@ class OllamaBrain(Brain):
         clock: Callable[[], datetime] | None = None,
         history_tags: bool = True,
         history_tools: bool = True,
+        personality: Personality | None = None,
     ) -> None:
         self.config = config
         self.bus = bus
@@ -160,6 +169,8 @@ class OllamaBrain(Brain):
         # Send past replies with their tag and tool trace (see roco.brain.history).
         self.history_tags = history_tags
         self.history_tools = history_tools
+        # Settings, company and voice commands (roco.personality); renders the prompt.
+        self.personality = personality or Personality.from_config(config)
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ Brain API
@@ -167,15 +178,22 @@ class OllamaBrain(Brain):
         with self._lock:
             turn = next(_turn_ids)
             self.bus.set_state(State.THINKING)
-            reply = _Reply(self.bus, on_sentence)
+            reply = _Reply(self.bus, on_sentence, self.personality.filter_sentence)
             text = (text or "").strip()
             if not text:
                 return ""
             started = self._clock()
+            # "ROCO, unhinged mode", "Yousaf's here": applied at once, no model call.
+            command = self.personality.handle_command(text, self._user_name())
+            if command is not None:
+                reply.set_emotion(command.emotion)
+                reply.say(command.reply)
+                self.history.add_turn(text, reply.text, command.emotion.value, [], at=started)
+                return reply.text
             past = self.history.for_model(
                 tags=self.history_tags, tools=self.history_tools, now=started
             )
-            messages = [self._system_message(), *past]
+            messages = [self._system_message(text), *past]
             # No current time is added here: tried after the user text, it made qwen2.5 skip
             # tools far more often (2/4 vs 4/4 scenario runs). Time comes from the tool.
             messages.append({"role": "user", "content": text})
@@ -224,16 +242,20 @@ class OllamaBrain(Brain):
             {"role": "tool", "content": result, "tool_name": "get_current_time"},
         ]
 
-    def _system_message(self) -> dict[str, str]:
+    def _system_message(self, text: str = "") -> dict[str, str]:
         assistant = self.config.section("assistant")
-        prompt = system_prompt(
-            str(assistant.get("name", "ROCO")), str(assistant.get("user_name", "Adam"))
+        # The user text only switches the prompt to "no jokes" on genuine distress.
+        prompt = self.personality.system_prompt(
+            str(assistant.get("name", "ROCO")), self._user_name(), text
         )
         now = self._clock()
         # Date only: the exact time comes from get_current_time, whose answer is spoken-style
         # (a 7B model misreads "19:58" as "half past seven" when it is in the prompt).
         prompt += f"\n\nToday is {describe_date(now)}."
         return {"role": "system", "content": prompt}
+
+    def _user_name(self) -> str:
+        return str(self.config.section("assistant").get("user_name", "Adam"))
 
     def _apologise(self, reply: _Reply, apology: str) -> str:
         reply.drop_partial()
@@ -246,7 +268,9 @@ class OllamaBrain(Brain):
     ) -> list[dict[str, Any]]:
         """Run the tool loop. Returns this turn's tool-call and tool-result messages."""
         start = len(messages)
-        schemas = self.registry.schemas() or None
+        # Tools that read Adam's data aloud are hidden while guests are in the room.
+        allowed = self.personality.allowed_tool
+        schemas = [s for s in self.registry.schemas() if allowed(s["function"]["name"])] or None
         retried = False
         round_no = 0
         while round_no <= self.max_tool_rounds:
@@ -276,6 +300,8 @@ class OllamaBrain(Brain):
                 name, arguments = _call_parts(call)
                 if name is None:
                     result = "Error: malformed tool call (no function name)."
+                elif not allowed(name):
+                    result = "Error: not available while other people are in the room."
                 else:
                     result = self.registry.call(name, arguments)
                 log.debug("[turn %d] tool %s(%s) -> %.200s", turn, name, _short(arguments), result)

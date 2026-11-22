@@ -84,6 +84,34 @@ def piper_voice_paths(cfg: Config) -> tuple[Path, Path]:
     return onnx, onnx.with_name(onnx.name + ".json")
 
 
+def tts_engine(cfg: Config) -> str:
+    """``voice.tts.engine``: piper (default) or kokoro."""
+    return str(cfg.get_path("voice.tts.engine", "piper") or "piper").strip().lower()
+
+
+def kokoro_dir() -> Path:
+    return models_dir() / "kokoro"
+
+
+def kokoro_paths(cfg: Config) -> tuple[Path, Path]:
+    """(model .onnx, voices .bin) for Kokoro; names resolve into ``models/kokoro``."""
+    from roco.voice.kokoro_tts import KOKORO_MODEL, KOKORO_VOICES
+
+    def where(key: str, default: str) -> Path:
+        value = str(cfg.get_path(f"voice.tts.kokoro.{key}", default) or default)
+        is_path = os.sep in value or "/" in value or value.startswith("~")
+        return Path(value).expanduser() if is_path else kokoro_dir() / value
+
+    return where("model", KOKORO_MODEL), where("voices", KOKORO_VOICES)
+
+
+def tts_model_files(cfg: Config) -> list[Path]:
+    """The files the configured TTS engine needs."""
+    if tts_engine(cfg) == "kokoro":
+        return list(kokoro_paths(cfg))
+    return list(piper_voice_paths(cfg))
+
+
 def piper_voice_urls(voice: str) -> tuple[str, str]:
     """Hugging Face URLs for a voice name like ``en_GB-alan-medium``.
 
@@ -223,6 +251,30 @@ def download_piper_voice(
     return DownloadResult(name, "downloaded", str(onnx.parent))
 
 
+def download_kokoro(
+    cfg: Config,
+    force: bool = False,
+    printer: Printer = print,
+    client: httpx.Client | None = None,
+) -> DownloadResult:
+    """Kokoro model + voices, only when ``voice.tts.engine`` is kokoro."""
+    from roco.voice.kokoro_tts import KOKORO_RELEASE
+
+    name = "Kokoro TTS"
+    if tts_engine(cfg) != "kokoro":
+        return DownloadResult(name, "present", "not used (voice.tts.engine is piper)")
+    files = kokoro_paths(cfg)
+    if not force and all(_valid_file(f) for f in files):
+        return DownloadResult(name, "present", str(files[0].parent))
+    printer(f"  Downloading Kokoro into {files[0].parent} ...")
+    try:
+        for dest in files:
+            download_file(f"{KOKORO_RELEASE}/{dest.name}", dest, printer, client)
+    except httpx.HTTPError as exc:
+        return DownloadResult(name, "failed", f"{exc.__class__.__name__}: {exc}")
+    return DownloadResult(name, "downloaded", str(files[0].parent))
+
+
 def download_whisper(cfg: Config, force: bool = False, printer: Printer = print) -> DownloadResult:
     model = str(cfg.get_path("voice.stt.model", "base.en"))
     name = f"faster-whisper {model}"
@@ -257,7 +309,8 @@ def download_all(
     steps: list[Callable[..., DownloadResult]] | None = None,
 ) -> list[DownloadResult]:
     results = []
-    for step in steps or (download_wakeword, download_piper_voice, download_whisper):
+    default_steps = (download_wakeword, download_piper_voice, download_kokoro, download_whisper)
+    for step in steps or default_steps:
         result = step(cfg, force=force, printer=printer)
         mark = {"downloaded": "OK  ", "present": "OK  ", "failed": "FAIL"}[result.status]
         detail = f" ({result.detail})" if result.detail else ""
