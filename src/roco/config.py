@@ -105,6 +105,7 @@ DEFAULTS: dict[str, Any] = {
         "history_turns": 6,  # user+assistant pairs kept while on the fallback
         "api_key_file": "anthropic_key",  # or ANTHROPIC_API_KEY; never in the repo
         "usage_file": "cloud_usage.jsonl",  # one line per cloud call
+        "state_file": "fallback_state.json",  # last private mode the brain sent (body)
         "stt_model": "tiny.en",  # faster-whisper on the body, loaded on first use
         # USD per million tokens, for the cost estimate in usage_file. Check
         # https://claude.com/pricing when you change the model.

@@ -9,6 +9,7 @@ link; this object is everything after it. Contract agreed with workstream B:
     fb.offline_line                               # spoken by the body's local TTS
     fb.offline_wav                                # same line pre-rendered (Path or None)
     fb.respond_audio(pcm, rate, on_sentence) -> str
+    fb.apply_settings(values)                     # brain settings: private mode
     fb.respond_text(text, on_sentence) -> str
     fb.cancel()                                   # barge-in; safe from another thread
     fb.brain_restored_line() -> str | None        # when the PC link is back
@@ -18,6 +19,10 @@ link; this object is everything after it. Contract agreed with workstream B:
 Sentences passed to ``on_sentence`` are clean spoken text: no emotion tag, no markdown.
 The first reply after a switch starts with a sentence saying ROCO is on the cloud
 brain (spec §10: says out loud when it uses the cloud).
+
+Claude is never called in private mode or past the budget cap
+(:mod:`roco.fallback.guards`): ROCO says why once per outage, in character, then just
+the offline line. Speech-to-text is skipped too, since nothing would use it.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from roco.fallback.claude import (
     CloudError,
     CloudPermanentError,
 )
+from roco.fallback.guards import DAILY, MONTHLY, PRIVATE, CloudGuard
 from roco.fallback.keys import load_api_key
 from roco.fallback.persona import fallback_system_prompt
 from roco.fallback.stt import LazyStt
@@ -53,6 +59,19 @@ CLOUD_SWITCH_LINE = (
 CLOUD_LOST_LINE = "Hang on, I've lost my backup brain as well."
 BRAIN_RESTORED_LINE = "And I'm back on my own brain. Much better."
 DIDNT_CATCH_LINE = "Sorry, I didn't catch that."
+PRIVATE_LINE = (
+    "My main brain's offline, and you've got me in private mode, so I won't borrow one "
+    "from the cloud. Give me a minute."
+)
+BUDGET_DAILY_LINE = (
+    "My main brain's offline, and I've spent today's cloud budget, so no backup brain "
+    "until midnight. Give me a minute."
+)
+BUDGET_MONTHLY_LINE = (
+    "My main brain's offline, and this month's cloud budget is spent, so no backup brain "
+    "until the first. Give me a minute."
+)
+BLOCKED_LINES = {PRIVATE: PRIVATE_LINE, DAILY: BUDGET_DAILY_LINE, MONTHLY: BUDGET_MONTHLY_LINE}
 
 
 class FallbackChain:
@@ -69,6 +88,7 @@ class FallbackChain:
         now: Callable[[], datetime] | None = None,
         describe_now: Callable[[datetime], str] | None = None,
         offline_wav: Path | None = None,
+        guard: CloudGuard | None = None,
     ) -> None:
         self._claude = claude
         self._stt = stt or LazyStt()
@@ -82,6 +102,8 @@ class FallbackChain:
         self._announced = False  # said "I'm on the cloud brain" since the last switch
         self._spoke = False  # the fallback answered something since the last restore
         self._claude_ok = claude is not None
+        self._guard = guard
+        self._explained: str | None = None  # the block reason already said this outage
         self.offline_line = OFFLINE_LINE
         # Pre-rendered WAV of offline_line in the body's voice (roco fallback-prepare), for
         # the body to play when its own TTS fails; None if not rendered for this voice.
@@ -99,6 +121,14 @@ class FallbackChain:
     def uses_cloud(self) -> bool:
         return self.name != "canned"
 
+    @property
+    def local_only(self) -> bool:
+        return self._guard is not None and self._guard.local_only
+
+    def apply_settings(self, values: Any) -> bool | None:
+        """A brain ``settings`` snapshot: picks up ``{"brain": {"local_only": bool}}``."""
+        return self._guard.apply_settings(values) if self._guard is not None else None
+
     def cancel(self) -> None:
         """Stop the reply in progress: no further ``on_sentence`` calls for it."""
         self._cancel.set()
@@ -108,6 +138,7 @@ class FallbackChain:
         spoke = self._spoke
         self._spoke = False
         self._announced = False
+        self._explained = None
         self._history.clear()
         if self._claude is not None:
             self._claude_ok = True  # give Claude another chance next time
@@ -125,6 +156,8 @@ class FallbackChain:
         self._cancel.clear()
         if not self.uses_cloud:
             return self._say(on_sentence, self.offline_line)
+        if (line := self._blocked_line()) is not None:
+            return self._say(on_sentence, line)
         try:
             text = self._stt.transcribe(pcm, rate)
         except Exception as exc:  # missing faster-whisper, model files, ...
@@ -143,6 +176,8 @@ class FallbackChain:
             return ""
         if not self.uses_cloud:
             return self._say(on_sentence, self.offline_line)
+        if (line := self._blocked_line()) is not None:
+            return self._say(on_sentence, line)
 
         spoken: list[str] = []
 
@@ -196,6 +231,19 @@ class FallbackChain:
         return " ".join(spoken)
 
     # ------------------------------------------------------------------ helpers
+    def _blocked_line(self) -> str | None:
+        """The line to say instead of calling Claude, or None if Claude may be used."""
+        reason = self._guard.blocked() if self._guard is not None else None
+        if reason is None:
+            self._explained = None
+            return None
+        log.info("Fallback not using the cloud: %s", reason)
+        if self._explained == reason:
+            return self.offline_line
+        self._explained = reason
+        self._announced = False  # if the cloud comes back, say so again
+        return BLOCKED_LINES.get(reason, self.offline_line)
+
     def _finish_failed(self, spoken: list[str], prefix: int,
                        emit: SentenceCallback) -> str:
         emit(CLOUD_LOST_LINE if len(spoken) > prefix else self.offline_line)
@@ -249,4 +297,5 @@ def create_fallback(cfg: Config, *, client: Any = None) -> FallbackChain:
         now=lambda: datetime.now(tz),
         describe_now=describe_now,
         offline_wav=find_offline_wav(cfg, OFFLINE_LINE),
+        guard=CloudGuard.from_config(cfg),
     )
