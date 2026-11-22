@@ -41,6 +41,7 @@ voice:
   wake_word:
     model: hey_jarvis
     threshold: 0.5
+    preroll_ms: 1200       # audio before the wake word fired: whisper hears all of "hey Jarvis"
   recording:               # roco run --legacy only (Phase 2 energy endpointing)
     silence_s: 0.9
     max_s: 15
@@ -52,8 +53,11 @@ voice:
     engine: auto           # auto | webrtc | speex | none (see docs/AEC.md)
     min_erle_db: 10        # weaker echo cancellation -> barge-in needs the wake word
   barge_in:
-    mode: speech           # speech (interrupt by talking) | wake_word | off
-    start_ms: 96           # speech needed before ROCO stops talking
+    mode: speech           # speech (interrupt by talking) | name (wake word only) | off
+    start_ms: 128          # speech needed before ROCO stops talking
+    echo_margin_db: 3      # ...and that far above ROCO's leftover echo
+    echo_guard: true       # ignore barge-ins whose transcript is ROCO's own words
+    preroll_ms: 800        # audio from before the barge-in decision, sent with the turn
   playback:
     latency: 0.05          # seconds; raise to 0.1 if ROCO's voice crackles
   stt:

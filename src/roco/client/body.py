@@ -84,8 +84,15 @@ class Mode(StrEnum):
 
 class BargeInMode(StrEnum):
     SPEECH = "speech"  # any speech over playback (needs a working AEC)
-    WAKE_WORD = "wake_word"  # only the wake word interrupts
+    NAME = "name"  # only ROCO's name / the wake word interrupts
     OFF = "off"
+
+    @classmethod
+    def parse(cls, value: str | None) -> BargeInMode:
+        value = (value or "speech").strip().lower()
+        if value in ("wake_word", "wake", "wakeword"):  # earlier name of NAME
+            return cls.NAME
+        return cls(value)
 
 
 @dataclass
@@ -96,10 +103,21 @@ class BodySettings:
     followup_s: float = 5.0
     wake_threshold: float = 0.5
     wake_tail_frames: int = 3  # frames after the wake word that are still "...Jarvis"
-    preroll_frames: int = 4  # sent at the start of speech-triggered turns (320 ms)
+    # Audio sent from before the turn's trigger. Wake turns get the whole "hey Jarvis"
+    # (whisper garbles a fragment of it into the question: "...vis go into" -> "of
+    # this"); speech-triggered turns get the speech the VAD needed plus a margin.
+    wake_preroll_ms: float = 1200.0
+    preroll_ms: float = 800.0
     barge_in: BargeInMode = BargeInMode.SPEECH
     barge_threshold: float = 0.6
-    barge_start_ms: float = 96.0  # measured 156-220 ms onset->silence on a laptop
+    barge_start_ms: float = 128.0  # confirmed speech while ROCO talks (bench: docs/AEC.md)
+    # While ROCO talks, a frame only counts as Adam when the echo-cancelled mic is this
+    # far above the residual echo the monitor has learnt (double-talk gate).
+    echo_margin_db: float = 3.0
+    echo_guard: bool = True  # compare barge-in transcripts with ROCO's own words
+    echo_match_threshold: float = 0.6
+    max_echo_barge_ins: int = 2  # this many echo matches...
+    echo_window_s: float = 30.0  # ...within this window -> name-only barge-in
     echo_guard_frames: int = 4  # skipped after playback when there is no AEC
     reply_timeout_s: float = 30.0  # no answer at all from the brain: give up
     min_erle_db: float = 10.0  # below this (median, while playing) the AEC is not trusted
@@ -176,7 +194,7 @@ class BodyClient:
 
         self.barge_mode = self.s.barge_in
         if self.barge_mode is BargeInMode.SPEECH and aec_name == "none":
-            self.barge_mode = BargeInMode.WAKE_WORD
+            self.barge_mode = BargeInMode.NAME
             self.degrade_reason = "no echo canceller installed"
             log.warning("Barge-in on any speech needs an echo canceller; using the wake word")
         else:
@@ -194,9 +212,15 @@ class BodyClient:
         self._barge: VadEndpointer | None = None
         self._cancelled: set[int] = set()
         self._announcements: set[int] = set()
-        self._preroll: deque[bytes] = deque(maxlen=max(1, self.s.preroll_frames))
+        frame_ms = float(self.s.frame_ms)
+        self._wake_preroll_n = max(1, round(self.s.wake_preroll_ms / frame_ms))
+        self._preroll_n = max(1, round(self.s.preroll_ms / frame_ms))
+        self._preroll: deque[bytes] = deque(maxlen=max(self._wake_preroll_n,
+                                                       self._preroll_n))
         self._false_barges = 0
-        self._barge_turns: set[int] = set()
+        self._barge_turns: dict[int, list[str]] = {}  # barge-in turn -> ROCO's words
+        self._echo_times: deque[float] = deque()
+        self._echo_ref: list[str] = []
         self._fallback: Any = None
         self._fallback_lock = threading.Lock()
         self._local_tts: TTS | None = None
@@ -304,7 +328,10 @@ class BodyClient:
         """openWakeWord fires a few hundred ms after "Jarvis" ends; a question said in
         the same breath has already started by then. Send the frames before the wake
         decision too (the brain strips the wake phrase from the transcript)."""
-        return list(self._preroll)  # ends with the frame the wake word fired on
+        return list(self._preroll)[-self._wake_preroll_n:]  # ends with the wake frame
+
+    def _speech_preroll(self) -> list[bytes]:
+        return list(self._preroll)[-self._preroll_n:]
 
     def _step_followup(self, wake: float, scores: list) -> None:
         if self._woke(wake):
@@ -316,7 +343,7 @@ class BodyClient:
         assert self._followup is not None
         event = self._followup.feed(scores)
         if event is Endpoint.SPEECH_START:
-            self._start_turn("followup", list(self._preroll), skip_tail=False)
+            self._start_turn("followup", self._speech_preroll(), skip_tail=False)
         elif event is Endpoint.NO_SPEECH:
             self._enter_idle()
 
@@ -349,10 +376,16 @@ class BodyClient:
     def _barge_detect(self, wake: float, scores: list) -> bool:
         if self.barge_mode is BargeInMode.OFF:
             return False
-        if self.barge_mode is BargeInMode.WAKE_WORD:
+        if self.barge_mode is BargeInMode.NAME:
             return self._woke(wake)
         if self._barge is None:
             self._barge = self._new_barge_endpointer()
+        mon = self.echo_monitor
+        if mon is not None and hasattr(mon, "near_end") and not mon.near_end(
+                self.s.echo_margin_db):
+            # Not clearly above ROCO's residual echo: whatever the VAD thinks, it is not
+            # evidence of Adam (it is usually ROCO's own voice leaking through).
+            scores = [(0.0, ms) for _, ms in scores]
         if self._barge.feed(scores) is Endpoint.SPEECH_START:
             return True
         return self._woke(wake)  # the wake word always works too
@@ -435,8 +468,43 @@ class BodyClient:
             self._barge_verdict(False)
         elif rec.local:
             self._barge_verdict(rec.endpointer.speech_ms >= 250)
-        else:
-            self._barge_turns.add(rec.turn)  # decided when the transcript arrives
+        else:  # decided when the brain's transcript arrives
+            self._barge_turns[rec.turn] = list(self._echo_ref)
+
+    def _judge_barge_in(self, turn: int, text: str, reference: list[str]) -> None:
+        """The brain's transcript of a barge-in turn: Adam, nothing, or ROCO's echo?"""
+        if not text.strip():
+            self._barge_verdict(False)
+            return
+        if self.s.echo_guard and reference:
+            from roco.client.echo_guard import is_echo
+
+            verdict = is_echo(text, reference, threshold=self.s.echo_match_threshold)
+            if verdict.echo:
+                self._drop_echo_turn(turn, text, verdict.matched, verdict.score)
+                return
+        self._barge_verdict(True)
+
+    def _drop_echo_turn(self, turn: int, text: str, matched: str, score: float) -> None:
+        """Cancel a barge-in turn that was ROCO hearing itself, before it is answered."""
+        log.warning("Turn %d was ROCO's own echo, not Adam: heard %r ~ ROCO said %r "
+                    "(%.2f); ignored", turn, text, matched, score)
+        self.stats.setdefault("echo_barge_ins", []).append(
+            {"turn": turn, "heard": text, "matched": matched})
+        self._cancelled.add(turn)
+        self._send(Interrupt(turn=turn, reason="echo"))
+        self.player.cut(turn)
+        if self._reply is not None and self._reply.turn == turn:
+            self._reply = None
+            if self.mode is Mode.REPLY:
+                self._enter_followup()
+        now = self.clock()
+        self._echo_times.append(now)
+        while self._echo_times and now - self._echo_times[0] > self.s.echo_window_s:
+            self._echo_times.popleft()
+        if len(self._echo_times) >= self.s.max_echo_barge_ins:
+            self._degrade(f"{len(self._echo_times)} barge-ins in "
+                          f"{self.s.echo_window_s:.0f} s were ROCO's own echo")
 
     def _barge_verdict(self, real: bool) -> None:
         self._false_barges = 0 if real else self._false_barges + 1
@@ -449,6 +517,7 @@ class BodyClient:
         detect_ms = int(self._barge.speech_ms) if self._barge is not None else 0
         targets = [turn] if turn is not None else []
         targets += sorted(self._announcements)
+        self._echo_ref = [line for t in targets for line in self.player.spoken_context(t)]
         heard = {t: self.player.cut(t) for t in targets}
         cut_ms = (self.clock() - t_decide) * 1000.0
         stop_ms = detect_ms + cut_ms + self.output_latency() * 1000.0
@@ -472,7 +541,7 @@ class BodyClient:
         if reply is not None and reply.local:
             self._cancel_fallback()
         self._reply = None
-        self._start_turn("barge_in", list(self._preroll), skip_tail=False)
+        self._start_turn("barge_in", self._speech_preroll(), skip_tail=False)
 
     def _cut_announcements(self, reason: str) -> None:
         for t in sorted(self._announcements):
@@ -544,8 +613,8 @@ class BodyClient:
                 if frame.final:
                     log.info("Brain heard (turn %d): %r", frame.turn, frame.text)
                     if frame.turn in self._barge_turns:
-                        self._barge_turns.discard(frame.turn)
-                        self._barge_verdict(bool(frame.text.strip()))
+                        self._judge_barge_in(frame.turn, frame.text,
+                                             self._barge_turns.pop(frame.turn))
             elif isinstance(frame, Settings):
                 if "muted" in frame.values:
                     self.set_muted(bool(frame.values["muted"]))
@@ -665,9 +734,9 @@ class BodyClient:
     def _degrade(self, reason: str) -> None:
         if self.barge_mode is not BargeInMode.SPEECH:
             return
-        self.barge_mode = BargeInMode.WAKE_WORD
+        self.barge_mode = BargeInMode.NAME
         self.degrade_reason = reason
-        msg = (f"Barge-in switched to the wake word only: {reason}. "
+        msg = (f"Barge-in switched to name only: {reason}. "
                "Say the wake word to interrupt ROCO.")
         log.warning(msg)
         print(msg, flush=True)

@@ -159,9 +159,12 @@ DEFAULTS: dict[str, Any] = {
             "min_erle_db": 10.0,  # weaker than this while speaking -> wake-word barge-in
         },
         "barge_in": {
-            "mode": "speech",  # speech (any speech, needs AEC) | wake_word | off
+            "mode": "speech",  # speech (any speech, needs AEC) | name (wake word only) | off
             "threshold": 0.6,
-            "start_ms": 96,  # speech needed before ROCO stops (hardware test: 156-220 ms)
+            "start_ms": 128,  # speech needed before ROCO stops talking
+            "echo_margin_db": 3.0,  # ...and that far above the residual echo after AEC
+            "echo_guard": True,  # ignore barge-ins whose transcript is ROCO's own words
+            "preroll_ms": 800,  # audio from before the barge-in decision, sent with it
         },
         "playback": {
             "rate": 22050,  # reopened at the brain's tts_rate on connect

@@ -165,6 +165,18 @@ class Player:
                 return ""
             return " ".join(state.texts.get(i, "") for i in state.heard if state.texts.get(i))
 
+    def spoken_context(self, turn: int, before: int = 2, after: int = 1) -> list[str]:
+        """What ROCO was saying in ``turn`` around now: the last ``before`` sentences
+        heard, the one playing and ``after`` more queued (for the echo guard)."""
+        with self._lock:
+            state = self._turns.get(turn)
+            if state is None:
+                return []
+            heard = [i for i in state.heard if i in state.texts]
+            pending = sorted(i for i in state.texts if i not in state.heard)
+            picked = heard[-before:] + pending[: 1 + after]
+            return [state.texts[i] for i in picked if state.texts.get(i)]
+
     def forget(self, turn: int) -> None:
         """Drop the bookkeeping of a completed turn."""
         with self._lock:
