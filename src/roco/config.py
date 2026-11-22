@@ -137,6 +137,7 @@ DEFAULTS: dict[str, Any] = {
             "model": "hey_jarvis",
             "threshold": 0.5,
             "inference_framework": "onnx",  # tflite is not available on Windows
+            "preroll_ms": 1200,  # audio before the wake word fired, sent with the turn
         },
         "recording": {
             "silence_s": 0.9,
